@@ -316,7 +316,7 @@ min_arcsec = 0.5
 max_arcsec = 1.0
 severity = "warn"
 why = "NINA settles in guide pixels (PHD2GuiderScale PIXELS), so its threshold in arcsec is pixels x the PHD2 scale: 5 px at 0.38\"/px is 1.9\", nearly 8 RC16 pixels, and NINA starts the next sub before a dither has settled. The PS-89 audit wants 0.5 to 1\"."
-fix = "NINA #1 > Options > Equipment > Guider: Settle pixels = 1\" / the PHD2 scale (2.6 px at 0.381\"/px; 2.7 px with the ASI174MM Mini at 0.372\"/px)."
+fix = "NINA #1 > Options > Equipment > Guider: Settle pixels = 1\" / the PHD2 scale (2.6 px at 0.381\"/px or with the ASI174MM Mini at 0.372\"/px; set 2.6 on 2026-11-02 through ninaAPI profile/change-value?settingpath=GuiderSettings-SettlePixels&newValue=2.6)."
 
 [[rule]]
 id = "nina1_settle_timeout"
@@ -410,6 +410,39 @@ max = 3350
 severity = "warn"
 why = "NINA's framing, FITS FOCALLEN and the plate-solve scale hint use it (3248 nominal, 3286 from the 0.236\"/px solve)."
 fix = "NINA #1 > Options > Equipment > Telescope: Focal length 3248."
+
+[[rule]]
+id = "nina1_no_sync"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 mount coordinates sync off"
+path = "profile.TelescopeSettings.NoSync"
+equals = true
+severity = "warn"
+why = "TheSky's TPoint model points the Paramount. A NINA plate-solve sync goes into TheSky and can shift the model's index terms or raise TheSky's sync confirmation (m_bConfirmSyncs=1). With sync off, NINA centers by offset slews. Turned off 2026-11-02 (docs/UI_SURVEY_NINA_PHD2.md)."
+fix = "NINA #1 > Options > Equipment > Mount: Coordinates sync OFF (ninaAPI: profile/change-value?settingpath=TelescopeSettings-NoSync&newValue=true)."
+
+[[rule]]
+id = "nina1_high_fullwell"
+app = "nina1"
+rig = "rc16"
+label = "RC16 camera High Fullwell mode"
+path = "profile.CameraSettings.TouptekAlikeHighFullwell"
+equals = true
+severity = "fail"
+why = "Every RC16 light, dark and flat in the ledger (since 2026-10-13 at least) was shot with High Fullwell ON. The mode changes the sensor response but is in no FITS header, so a switch would make the whole calibration library silently mismatch."
+fix = "NINA #1 > Equipment > Camera > Settings: High Fullwell Mode ON. Change it only together with a new dark and flat library."
+
+[[rule]]
+id = "nina1_ultra_mode"
+app = "nina1"
+rig = "rc16"
+label = "RC16 camera Ultra mode"
+path = "profile.CameraSettings.TouptekAlikeUltraMode"
+equals = true
+severity = "warn"
+why = "On for every RC16 frame so far; a driver mode that is in no FITS header, kept fixed so calibration frames match the lights."
+fix = "NINA #1 > Equipment > Camera > Settings: Ultra mode ON."
 
 # --------------------------------------------------------- NINA #2 Piggy-600
 
@@ -507,6 +540,28 @@ severity = "warn"
 check_disconnected = true
 why = "One PHD2 guides the RC16 OAG; NINA #2 connected to it too can stop or dither the RC16's guiding."
 fix = "NINA #2 > Equipment > Guider: disconnect (No guider)."
+
+[[rule]]
+id = "nina2_high_fullwell"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 camera High Fullwell mode"
+path = "profile.CameraSettings.TouptekAlikeHighFullwell"
+equals = false
+severity = "fail"
+why = "Every Piggy-600 OSC frame in the ledger was shot with High Fullwell OFF. The mode is in no FITS header, so a switch would silently mismatch the OSC darks and flats."
+fix = "NINA #2 > Equipment > Camera > Settings: High Fullwell Mode OFF. Change it only together with a new OSC dark and flat library."
+
+[[rule]]
+id = "nina2_ultra_mode"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 camera Ultra mode"
+path = "profile.CameraSettings.TouptekAlikeUltraMode"
+equals = true
+severity = "warn"
+why = "On for every OSC frame so far; in no FITS header, kept fixed so calibration matches."
+fix = "NINA #2 > Equipment > Camera > Settings: Ultra mode ON."
 
 # ------------------------------------------------------------------ PHD2
 
@@ -613,6 +668,73 @@ path = "api.dec_params"
 report = true
 why = "Reported so a change shows in the ledger (the PS-89 audit judges the values)."
 fix = ""
+
+# 2026-11-02: the Brain dialog settings outside JSON-RPC, read from the
+# registry profile (phd2_profile_store KEYS). Reported, not judged: each
+# shows in the ledger and its "what changed" diff. To change one: the UI
+# path in fix (PHD2 saves the profile itself), or with PHD2 closed edit
+# HKCU\Software\StarkLabs\PHDGuidingV2\profile\<id>\<key> after a backup
+# (phd2_profile_store.backup). docs/UI_SURVEY_NINA_PHD2.md.
+
+[[rule]]
+id = "phd2_noise_reduction"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 noise reduction"
+path = "profile.noise_reduction"
+report = true
+why = "Filters hot pixels before star finding; 3x3 median on 2026-11-02. Registry NoiseReductionMethod (0 None, 1 2x2 mean, 2 3x3 median)."
+fix = "PHD2 Brain > Camera: Noise Reduction."
+
+[[rule]]
+id = "phd2_auto_exposure_range"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 auto exposure min / max (ms)"
+path = "profile.auto_exp_max_ms"
+report = true
+why = "Only used when the exposure is Auto; 2000 / 6000 ms, target SNR 50 on 2026-11-02. Registry auto_exp\\exposure_min, exposure_max, target_snr."
+fix = "PHD2 Brain > Camera: Auto Exposure Min / Max / Target SNR."
+
+[[rule]]
+id = "phd2_dither_mode"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 dither mode"
+path = "profile.dither_mode"
+report = true
+why = "NINA asks PHD2 to dither; PHD2's mode (Random), scale (1.0) and RA-only (off) shape every dither. Registry DitherMode, DitherScaleFactor, DitherRaOnly."
+fix = "PHD2 Brain > Global: Dither Settings (Mode, Scale, RA only)."
+
+[[rule]]
+id = "phd2_dither_scale"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 dither scale"
+path = "profile.dither_scale"
+report = true
+why = "Multiplies NINA's dither amount (20 px x 1.0 on 2026-11-02); with the 20 px search region a larger scale can throw the star out of the box."
+fix = "PHD2 Brain > Global: Dither Settings, Scale."
+
+[[rule]]
+id = "phd2_max_pulse"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 max RA / Dec pulse (ms)"
+path = "profile.max_ra_duration_ms"
+report = true
+why = "Caps one guide pulse (2500 / 2500 ms on 2026-11-02). Registry scope\\MaxRaDuration, MaxDecDuration."
+fix = "PHD2 Brain > Algorithms: Max RA duration / Max Dec duration."
+
+[[rule]]
+id = "phd2_image_logging"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 diagnostic image logging"
+path = "profile.image_logging"
+report = true
+why = "Saves guide frames on lost stars and large errors (relative 4, absolute 4 px) for the sub doctor. Registry ImageLogger\\*."
+fix = "PHD2 Brain > Global: Enable diagnostic image logging; Save Guider Images."
 
 # ---------------------------------------------------------------- TheSky
 

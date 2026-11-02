@@ -725,7 +725,7 @@ def _unknown_note(row, observed) -> str:
         else:
             notes.append("registry name not known yet (reg export on the scope PC)")
     if "ascom" in (row.get("sources") or []):
-        notes.append("driver flag location not known yet: check it by hand")
+        notes.append("driver flag not read: check it by hand")
     srcs = observed.get("_sources") or {}
     for s in row.get("sources") or []:
         if s in srcs and not srcs[s].get("ok") and srcs[s].get("note"):

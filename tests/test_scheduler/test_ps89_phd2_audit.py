@@ -325,6 +325,47 @@ def test_profile_store_reads_flat_and_resolves_the_profile(monkeypatch):
     assert ps.read(1)["available"] is False
 
 
+def test_profile_store_reads_the_brain_dialog_keys(monkeypatch):
+    # 2026-11-02: noise reduction, auto exposure, dither and image logging,
+    # names as in the scope PC's profile 2
+    S, D = FakeWinreg.REG_SZ, FakeWinreg.REG_DWORD
+    prof = _node({"name": ("Primary RC Profile (Guider)", S), "NoiseReductionMethod": (2, D),
+                  "DitherMode": (0, D), "DitherScaleFactor": ("1", S), "DitherRaOnly": (0, D)}, {
+        "auto_exp": _node({"exposure_min": (2000, D), "exposure_max": (6000, D),
+                           "target_snr": ("50", S)}),
+        "scope": _node({"MaxRaDuration": (2500, D), "MaxDecDuration": (2500, D)}),
+        "ImageLogger": _node({"LoggingEnabled": (1, D)})})
+    root = _node({"currentProfile": (2, D)}, {"profile": _node(keys={"2": prof})})
+    reg = FakeWinreg(_node(keys={"Software": _node(keys={"StarkLabs": _node(
+        keys={"PHDGuidingV2": root})})}))
+    monkeypatch.setattr(ps, "_winreg", lambda: reg)
+    r = ps.read(2)
+    v = r["values"]
+    assert v["auto_exp_max_ms"]["value"] == 6000 and v["auto_exp_max_ms"]["verified"]
+    assert v["max_ra_duration_ms"]["value"] == 2500 and v["image_logging"]["value"] == 1
+    assert r["derived"]["noise_reduction"] == "3x3 median"
+    assert r["derived"]["dither_mode"] == "Random"
+    assert v["max_hfd_px"]["value"] is None                   # not in this profile
+
+
+def test_read_ascom_reads_the_bisque_driver_flags(monkeypatch):
+    # 2026-11-02: the driver keeps "True" / "False" strings in its ASCOM profile
+    S = FakeWinreg.REG_SZ
+    drv = _node({"UseDirectGuide": ("False", S), "CanGetPierSide": ("True", S)})
+    node = drv
+    for part in reversed(ps.ASCOM_DRIVER_KEY.split("\\")):
+        node = _node(keys={part: node})
+    reg = FakeWinreg(_node())
+    reg.roots["HKLM"] = node
+    monkeypatch.setattr(ps, "_winreg", lambda: reg)
+    a = ps.read_ascom()
+    assert a["ascom_direct_guide"]["value"] is False and a["ascom_direct_guide"]["verified"]
+    assert a["ascom_pointing_state"]["value"] is True
+    rows, _res = _eval({"ascom": {k: v["value"] for k, v in a.items()}})
+    assert rows["ascom_direct_guide"]["status"] == pa.FAIL
+    assert rows["ascom_pointing_state"]["status"] == pa.PASS
+
+
 def test_profile_write_refusals_and_a_verified_round_trip(tmp_path, monkeypatch):
     reg = _registry()
     cfg = _cfg(tmp_path)

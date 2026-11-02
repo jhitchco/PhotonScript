@@ -349,6 +349,39 @@ def test_real_nina_captures_pass_the_camera_rules(tmp_path, pushes):
     assert _row(r, "nina2_no_phd2")["status"] == "pass"       # NINA #2 guider disconnected
 
 
+def test_camera_driver_modes_and_mount_sync(tmp_path, pushes):
+    # 2026-11-02: High Fullwell / Ultra are in no FITS header, so the ledger
+    # pins them (RC16 on, Piggy-600 off); the 10-13 capture still syncs.
+    r = _take(_cfg(tmp_path))
+    for rid in ("nina1_high_fullwell", "nina1_ultra_mode",
+                "nina2_high_fullwell", "nina2_ultra_mode"):
+        assert _row(r, rid)["status"] == "pass", (rid, _row(r, rid))
+    assert _row(r, "nina1_no_sync")["status"] == "warn"
+
+    def flip(fx):
+        p = fx["profile"].get("Response") or fx["profile"]
+        p["CameraSettings"]["TouptekAlikeHighFullwell"] = False
+        p["TelescopeSettings"]["NoSync"] = True
+    f = _take(_cfg(tmp_path), T0 + timedelta(hours=1),
+              nina1=_nina_collector("nina1", mutate=flip))
+    assert _row(f, "nina1_high_fullwell")["status"] == "fail"
+    assert _row(f, "nina1_no_sync")["status"] == "pass"
+    assert any("High Fullwell" in m for m in pushes)
+
+
+def test_phd2_brain_rows_are_reported(tmp_path, pushes):
+    def phd2(config):
+        s, live, src = _phd2()(config)
+        s["profile"].update({"noise_reduction": "3x3 median", "dither_mode": "Random",
+                             "dither_scale": 1, "auto_exp_max_ms": 6000,
+                             "max_ra_duration_ms": 2500, "image_logging": 1})
+        return s, live, src
+    r = _take(_cfg(tmp_path), phd2=phd2)
+    assert _row(r, "phd2_noise_reduction")["status"] == "info"
+    assert _row(r, "phd2_noise_reduction")["current"] == "3x3 median"
+    assert _row(r, "phd2_dither_mode")["current"] == "Random"
+
+
 def test_phd2_rules(tmp_path, pushes):
     cfg = _cfg(tmp_path)
     r = _take(cfg, phd2=_phd2(min_snr=50, silenced=("PulseGuideFailedAlert",), darks=False))
