@@ -474,6 +474,23 @@
                     ';"><b>Dispatch lint</b>: ' + String(dg.line).replace(/</g, '&lt;') +
                     ' <span style="opacity:.6">(' + String(dg.at || '').slice(11, 16) + ' UTC)</span></div>');
             }
+            // PS-15: did NINA #2 get its companion sequence tonight
+            const cp = d.companion;
+            if (cp && cp.state) {
+                const esc = s => String(s || '').replace(/</g, '&lt;');
+                const ok = cp.state === 'dispatched', skip = cp.state === 'skipped';
+                let hhmm = '';
+                try { hhmm = new Date(cp.at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); } catch (e) {}
+                const txt = ok ? 'dispatched ' + hhmm + (cp.detail ? ' (' + esc(cp.detail) + ')' : '')
+                    : skip ? 'skipped: ' + esc(cp.detail)
+                    : 'NOT dispatched: ' + ({lint_refused: 'lint', failed: 'NINA #2', error: 'error'}[cp.state] || esc(cp.state)) +
+                        (cp.detail ? ' ' + esc(cp.detail).slice(0, 200) : '') + ' (' + hhmm + ')';
+                chips.push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + (ok ? 'rgba(74,222,128,.3)' : skip ? 'rgba(148,163,184,.4)' : 'rgba(239,68,68,.7)') +
+                    ';"><b>Piggy-600</b>: ' + txt +
+                    (cp.reason && cp.reason !== 'arm' ? ' <span style="opacity:.6">(' + esc(cp.reason) + ')</span>' : '') +
+                    '</div>');
+            }
             // 2026-10-16: TPoint / ProTrack preflight at arm (one line)
             const tp = d.tpoint_preflight;
             if (tp && tp.line) {
