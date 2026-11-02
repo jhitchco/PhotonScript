@@ -10,6 +10,7 @@ flats_when dawn | dusk | both, and (part B) the always-wanted RC16 darks.
 """
 import asyncio
 import json
+import threading
 from datetime import datetime, timedelta
 
 import pytest
@@ -555,3 +556,25 @@ def test_new_sources_ascii_no_em_dash():
     for rel in ("photonscript/scheduler/dusk_flats.py",
                 "tests/test_scheduler/test_dusk_flats_both_rigs.py"):
         assert (root / rel).read_text(encoding="utf-8").isascii(), rel
+
+
+def test_stale_scan_runs_off_the_loop_thread(env, tmp_path, monkeypatch):
+    """PS-55: the calibration health scan (FITS getheader) stalled the loop
+    5 to 6 s every evening (stalls.log 2026-10-28 to 11-01)."""
+    threads = []
+
+    def stale(c):
+        threads.append(threading.get_ident())
+        return ["B"]
+    monkeypatch.setattr(cal, "stale_flat_filters", stale)
+    cfg = _cfg(tmp_path, auto_arm_enabled=False, noon_arm_enabled=False)
+
+    async def tick():
+        loop_thread = threading.get_ident()
+        out = await df.maybe_dispatch_dusk_flats(cfg, _Armer(), {}, env["notify"],
+                                                 now=env["now"])
+        return loop_thread, out
+
+    loop_thread, out = _run(tick())
+    assert out == "dispatched"
+    assert threads and loop_thread not in threads

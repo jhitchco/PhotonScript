@@ -1671,18 +1671,24 @@ class TelescopeAgent:
             return [f for ext in exts
                     for f in self._watch_dir.rglob(f"*{ext}")]
 
+        # PS-55: the tree walk runs in a worker thread. On the scope PC a
+        # night folder with thousands of subs took 5 s per rglob on the loop
+        # (stalls.log 2026-10-31), holding the API, armer and agents.
+        def _scan_if_exists():
+            return _scan() if self._watch_dir.exists() else None
+
         # Initialize with existing files
-        if self._watch_dir.exists():
-            for f in _scan():
-                seen_files.add(str(f))
+        for f in await asyncio.to_thread(_scan_if_exists) or []:
+            seen_files.add(str(f))
 
         while self._running:
             try:
-                if not self._watch_dir.exists():
+                found = await asyncio.to_thread(_scan_if_exists)
+                if found is None:
                     await asyncio.sleep(10)
                     continue
 
-                for f in _scan():
+                for f in found:
                     fpath = str(f)
                     if fpath in seen_files:
                         continue

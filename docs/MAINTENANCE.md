@@ -131,6 +131,14 @@ deployed with `-AllowPaused` while paused; ship it while DISARMED / COMPLETE
 - Never start the service from an elevated (Administrator) shell: files it
   creates (astropy cache, logs) end up owned by Administrators and the normal
   account can no longer write them.
+- Outcome (2026-11-02): the 2026-09-26 unresponsive API was the S4U / session
+  0 environment; since PS-44 the task runs Interactive (session 1) and the API
+  answers. The WinError 123 listener error on a '?' target was fixed on
+  2026-10-12 (librarian safe paths). The remaining 5 to 6 s stalls in
+  stalls.log came from the image file watch rglob and the evening dusk-flats
+  calibration health scan running on the loop; both now run in a worker
+  thread. If a new stall shows up, read its stack in stalls.log and move that
+  call off the loop the same way (`asyncio.to_thread`).
 
 ## Pruning old captures (free the capture drive)
 

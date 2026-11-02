@@ -56,6 +56,7 @@ learning from the window (sky_flat_model.refresh).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -214,7 +215,9 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
         _note(config, state, SKIP_FLATS_WHEN, "the night sequences shoot "
               "flats at dawn only", now, final=True)
         return SKIP_FLATS_WHEN
-    owed, pb = _stale(config, state)
+    # PS-55: the calibration health scan reads FITS headers (5 to 6 s on the
+    # scope PC, stalls.log 2026-10-28 to 11-01); off the event loop
+    owed, pb = await asyncio.to_thread(_stale, config, state)
     pb_owed = bool(pb.get("owed"))
     # 2026-10-24: RC16 narrowband is too dim at dusk (dusk_flat_filters)
     stale = cal.dusk_flat_filters(config, owed)
