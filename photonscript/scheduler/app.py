@@ -724,6 +724,12 @@ _CONFIG_FIELDS = [
     ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
     ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
     ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
+    ("disk_share_dir", "PS_DISK_SHARE_DIR", "Disk tab: the Syncthing share folder holding the Library (blank = the Library's parent)", "Disk", "str", False, False),
+    ("disk_thesky_autosave_dir", "PS_DISK_THESKY_AUTOSAVE_DIR", "Disk tab: TheSky autosave folder", "Disk", "str", False, False),
+    ("disk_photonscript_dir", "PS_DISK_PHOTONSCRIPT_DIR", "Disk tab: PhotonScript install folder", "Disk", "str", False, False),
+    ("disk_thesky_keep_days", "PS_DISK_THESKY_KEEP_DAYS", "Disk tab: TheSky autosave files older than this many days count as reclaimable", "Disk", "int", False, False),
+    ("disk_night_keep_days", "PS_DISK_NIGHT_KEEP_DAYS", "Disk tab: nights older than this many days that the desktop already has are cleanup candidates", "Disk", "int", False, False),
+    ("disk_library_backup_dir", "PS_DISK_LIBRARY_BACKUP_DIR", "Disk tab: the desktop's backup of its Library mirror (named in the cleanup warning)", "Disk", "str", False, False),
     ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
     ("syncthing_calibration_folder_ids", "PS_SYNCTHING_CALIBRATION_FOLDER_IDS", "Syncthing folder ids that carry Library/Calibration once split off (PS-182, comma list; blank = inside the Library share)", "Sync", "str", False, False),
     ("dark_exposures", "PS_DARK_EXPOSURES", "Dark library exposures, seconds (comma-sep)", "Imaging", "str", False, False),
@@ -3673,3 +3679,5 @@ from photonscript.scheduler.routers import screen as _screen_router  # noqa: E40
 app.include_router(_screen_router.router)   # screen snapshot (2026-10-18)
 from photonscript.scheduler.routers import reentry as _reentry_router  # noqa: E402
 app.include_router(_reentry_router.router)   # re-entry gates (2026-10-15)
+from photonscript.scheduler.routers import disk as _disk_router  # noqa: E402
+app.include_router(_disk_router.router)   # Disk tab (2026-11-02)

@@ -324,6 +324,19 @@ class PhotonScriptConfig(BaseSettings):
                                     # completeness view asks them what the
                                     # desktop still needs. Blank = still inside
                                     # syncthing_folder_id
+    # --- Disk tab (scheduler/disk_usage.py, read only: nothing is deleted) ---
+    disk_share_dir: str = ""        # the Syncthing share holding the Library
+                                    # (OneDrive and the rest count as "share
+                                    # other"); "" = the Library's parent folder
+    disk_thesky_autosave_dir: str = r"C:\astro\TheSkyAutoSave"  # TheSky autosave
+    disk_photonscript_dir: str = r"C:\astro\PhotonScript"  # the install folder
+    disk_thesky_keep_days: int = 30  # TheSky autosave files older than this
+                                     # count as reclaimable
+    disk_night_keep_days: int = 60   # nights older than this that the desktop
+                                     # already has count as cleanup candidates
+    disk_library_backup_dir: str = r"I:\Astrophotography\RawArchive\Library"
+                                     # the DESKTOP's backup of its Library
+                                     # mirror, named in the cleanup warning
     sync_stall_min: int = 30        # alarm when the transfer batch's pending count
                                     # hasn't dropped in this many minutes while
                                     # still non-empty (a wedged transfer loop that
