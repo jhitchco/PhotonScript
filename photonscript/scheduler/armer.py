@@ -290,6 +290,10 @@ class Armer:
         self._recipe_pending: dict | None = None   # built into this dispatch
         self._recipe_alert: str | None = None      # fallback page, sent once
         self._apps_alerted: set = set()   # PS-170: (night, phase) paged
+        # PS-15: the last Piggy-600 companion dispatch outcome: {"night",
+        # "at", "state": dispatched | lint_refused | failed | error | skipped,
+        # "detail", "sequence", "reason": arm | resume | restart}
+        self.companion: dict | None = None
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -320,6 +324,7 @@ class Armer:
                 "pause": getattr(self, "pause_info", None),
                 "focus_cal": getattr(self, "focus_cal", None),   # PS-152
                 "recipe": getattr(self, "recipe", None),         # PS-181
+                "companion": getattr(self, "companion", None),   # PS-15
                 # 2026-10-14: the unguided guard's per-night state (episode,
                 # action count, alert latches) survives a restart
                 "unguided_guard": getattr(self, "_ug_state", None),
@@ -413,6 +418,7 @@ class Armer:
         self.pause_info = saved.get("pause")  # PS-64
         self.focus_cal = saved.get("focus_cal")  # PS-152
         self.recipe = saved.get("recipe")        # PS-181
+        self.companion = saved.get("companion")  # PS-15
         ug = saved.get("unguided_guard")
         if isinstance(ug, dict) and ug.get("night") == self.plan.get("night_of"):
             self._ug_state = ug
@@ -571,6 +577,7 @@ class Armer:
                 "recipe": self._recipe_tonight(),                   # PS-181
                 "noon_arm": self._noon_arm_status(),
                 "dispatch_gate": self._gate_status(),               # PS-197
+                "companion": self._companion_status(),              # PS-15
                 "tpoint_preflight": self._tpoint_pf_status()}       # 2026-10-16
 
     def _manual_disarm_status(self) -> dict | None:
@@ -589,6 +596,24 @@ class Armer:
             return None
         return {k: g.get(k) for k in ("ok", "level", "action", "line", "at",
                                       "guided", "mode", "errors")}
+
+    def _companion_status(self) -> dict | None:
+        """PS-15: the last Piggy-600 companion dispatch for the Arm card
+        (this night only)."""
+        c = getattr(self, "companion", None)
+        if not isinstance(c, dict) or c.get("night") != self.plan.get("night_of"):
+            return None
+        return {k: c.get(k) for k in ("state", "at", "detail", "sequence",
+                                      "reason")}
+
+    @staticmethod
+    def _companion_redispatch_text(rec) -> str:
+        """PS-15: the resume / restart message part for the companion
+        re-dispatch outcome (a record from _dispatch_piggyback_companion)."""
+        if not isinstance(rec, dict) or rec.get("state") in (None, "dispatched"):
+            return "Piggy-600 companion re-dispatched"
+        return (f"Piggy-600 companion NOT re-dispatched ({rec.get('state')}: "
+                f"{str(rec.get('detail') or '')[:160]})")
 
     def _nina2_mount_status(self) -> dict | None:
         """PS-139: tonight's NINA #2 mount-instruction finding (chip)."""
@@ -3214,15 +3239,49 @@ class Armer:
                        "stop", ", ".join((running or [])[:3]), max_wait_s)
         return False
 
-    async def _dispatch_piggyback_companion(self) -> None:
+    def _record_companion(self, state: str, detail: str = "",
+                          sequence: str | None = None,
+                          reason: str = "arm") -> dict:
+        """PS-15: store the companion dispatch outcome (status() / the Arm
+        card), persist it and write one kind "companion_dispatch" line in
+        runs/<night>_events.jsonl. Returns the record. Never raises."""
+        now = datetime.utcnow()
+        rec = {"night": (getattr(self, "plan", None) or {}).get("night_of"),
+               "at": _iso(now), "state": state, "detail": detail,
+               "sequence": sequence, "reason": reason}
+        self.companion = rec
+        try:
+            self._persist()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "piggyback",
+                          "src": "photonscript", "kind": "companion_dispatch",
+                          "value": state, "detail": detail,
+                          "sequence": sequence, "reason": reason})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("companion dispatch event (%s) not logged: %s",
+                           state, e)
+        return rec
+
+    async def _dispatch_piggyback_companion(self, reason: str = "arm") -> dict:
         """Dispatch the piggyback calibration companion to NINA #2 alongside the
         RC16 night, so a single arm covers both scopes' calibration. OSC dawn
         flats always; roof-closed OSC darks/bias only when NINA #2 can see the
-        shared safety monitor. Never raises — logged + noted, never fatal."""
+        shared safety monitor. Never raises — logged + noted, never fatal.
+        PS-15: returns the outcome record (also kept in self.companion):
+        state dispatched | lint_refused | failed | error | skipped."""
         cfg = self.config
-        if not (getattr(cfg, "piggyback_enabled", False)
-                and getattr(cfg, "piggyback_calibrate_on_arm", True)):
-            return
+        if not getattr(cfg, "piggyback_enabled", False):
+            return self._record_companion("skipped", "piggyback off",
+                                          reason=reason)
+        if not getattr(cfg, "piggyback_calibrate_on_arm", True):
+            return self._record_companion(
+                "skipped", "piggyback_calibrate_on_arm off", reason=reason)
+        path = None
         try:
             from photonscript.shared.rigs import (rig_config, nina_dispatch,
                                                   PIGGYBACK)
@@ -3297,13 +3356,17 @@ class Armer:
                              f"failed ({errs[:400]}). RC16 night is "
                              "unaffected.", title="PhotonScript piggyback",
                              priority=1, kind="act")
-                return
+                return self._record_companion("lint_refused", errs[:400],
+                                              path.name, reason)
             res = await nina_dispatch(pcfg.nina_base_url, json.loads(seq_text),
                                       config=cfg, rig=PIGGYBACK)
             if res.get("ok"):
+                mode = ("lights+flats+darks/bias" if want_lights else
+                        ("flats+darks/bias" if has_safety else "flats only"))
                 logger.info("Piggyback companion dispatched to NINA #2 (%s)",
-                            ("lights+flats+darks/bias" if want_lights else
-                             ("flats+darks/bias" if has_safety else "flats only")))
+                            mode)
+                rec = self._record_companion("dispatched", mode, path.name,
+                                             reason)
                 if has_safety:
                     await notify(cfg, "Piggyback companion started on NINA #2 — "
                                  "sees the roof: dawn flats + roof-closed darks/bias"
@@ -3321,15 +3384,20 @@ class Armer:
                                  "roof opens early). Add the safety monitor to the "
                                  "NINA #2 profile to roof-gate them.",
                                  title="PhotonScript piggyback", priority=1, kind="info")
-            else:
-                logger.warning("Piggyback companion dispatch failed: %s",
-                               res.get("detail"))
-                await notify(cfg, "Piggyback calibration companion did NOT start "
-                             f"(NINA #2: {res.get('detail')}). RC16 night is "
-                             "unaffected.", title="PhotonScript piggyback",
-                             priority=1, kind="act")
+                return rec
+            logger.warning("Piggyback companion dispatch failed: %s",
+                           res.get("detail"))
+            rec = self._record_companion("failed", str(res.get("detail") or ""),
+                                         path.name, reason)
+            await notify(cfg, "Piggyback calibration companion did NOT start "
+                         f"(NINA #2: {res.get('detail')}). RC16 night is "
+                         "unaffected.", title="PhotonScript piggyback",
+                         priority=1, kind="act")
+            return rec
         except Exception as e:  # noqa: BLE001
             logger.warning("Piggyback companion dispatch error: %s", e)
+            return self._record_companion("error", str(e)[:400],
+                                          path.name if path else None, reason)
 
     # -- PS-136: watch a sideloaded night ---------------------------------------
     #
@@ -3917,8 +3985,8 @@ class Armer:
         pb = (p.get("rigs") or {}).get("piggyback")
         pb_txt = "Piggy-600 untouched"
         if p.get("piggy") == "pause" and isinstance(pb, dict) and pb.get("ok"):
-            await self._dispatch_piggyback_companion()
-            pb_txt = "Piggy-600 companion re-dispatched"
+            pbc = await self._dispatch_piggyback_companion(reason="resume")
+            pb_txt = self._companion_redispatch_text(pbc)
         self.pause_info = None
         self._unsafe_since = self._safe_since = None
         msg = f"Resumed by the operator: remainder re-dispatched; {pb_txt}"
@@ -4211,8 +4279,8 @@ class Armer:
         pb = (p.get("rigs") or {}).get("piggyback")
         pb_txt = "Piggy-600 untouched"
         if p.get("piggy") == "pause" and isinstance(pb, dict) and pb.get("ok"):
-            await self._dispatch_piggyback_companion()
-            pb_txt = "Piggy-600 companion re-dispatched"
+            pbc = await self._dispatch_piggyback_companion(reason="restart")
+            pb_txt = self._companion_redispatch_text(pbc)
         self.pause_info = None
         self._unsafe_since = self._safe_since = None
         names = list(getattr(self, "last_dispatch_targets", None) or [])

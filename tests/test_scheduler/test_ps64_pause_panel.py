@@ -238,8 +238,9 @@ def _armer(env, cams=(IDLE,), safe=True, state="RUNNING", **cfg):
     a._dispatch_and_start = _dispatch
     a.piggy_dispatched = []
 
-    async def _piggy():
+    async def _piggy(reason="arm"):
         a.piggy_dispatched.append(1)
+        return {"state": "dispatched", "reason": reason}   # PS-15
     a._dispatch_piggyback_companion = _piggy
     return a
 

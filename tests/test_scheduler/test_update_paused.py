@@ -246,7 +246,7 @@ def _restored(a, monkeypatch=None):
     b.cooler_dew_off = lambda skip_rigs=None: rec("cooler_dew_off")
     b._dispatch_and_start = lambda **kw: rec("dispatch")
     b._reconcile_cooler = lambda now: rec("reconcile_cooler")
-    b._dispatch_piggyback_companion = lambda: rec("piggy_companion")
+    b._dispatch_piggyback_companion = lambda **kw: rec("piggy_companion")
     assert b.restore() is True
     return b
 
