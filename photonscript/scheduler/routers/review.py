@@ -11,6 +11,11 @@ POST /api/runs/{date}/remeasure                PS-130 start it (dry run unless
                                                {"apply": true}; background)
 GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (measured
                                                once on view when missing)
+GET  /api/runs/{date}/stars/night?rig=&state=  PS-98 every sub's record summary
+                                               + star sidecar (rejects by
+                                               default; read only)
+GET  /api/runs/{date}/reject-fits?file=        PS-98 one rejected FITS while it
+                                               is still on the scope PC
 GET  /api/qa/ecc-scale?date=&refresh=          PS-94 native vs binned ecc report
 GET  /api/runs/{date}/score-report             PS-108 score vs today's verdicts
 GET  /api/runs/{date}/hist?file=&refresh=      PS-5 histogram (cached)
@@ -365,6 +370,32 @@ def api_remeasure(date: str, payload: dict | None = Body(default=None)):
     code, body = request(_cfg(), date, apply=bool(p.get("apply")),
                          allow_unreject=bool(p.get("allow_unreject")))
     return JSONResponse(status_code=code, content=body)
+
+
+@router.get("/api/runs/{date}/stars/night")
+def api_night_stars(date: str, rig: str = "piggyback", state: str = "rejected"):
+    """PS-98: one night's subs for a rig (state rejected | accepted | all)
+    with their record summary and stored star sidecar, so a desktop tool
+    can diagnose rejected subs after their FITS are deleted. Read only:
+    a sub without a sidecar is listed with "sidecar": null, never measured."""
+    from photonscript.scheduler.reject_access import STATES, night_stars
+    if state not in STATES:
+        return JSONResponse(status_code=400, content={
+            "detail": f"state must be one of {', '.join(STATES)}"})
+    return night_stars(_cfg(), date, rig, state)
+
+
+@router.get("/api/runs/{date}/reject-fits")
+def api_reject_fits(date: str, file: str):
+    """PS-98: download ONE rejected sub's FITS while it is still on the
+    scope PC (403 for an accepted sub, it is in the synced Library; 404
+    once it was deleted). Read only."""
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.reject_access import reject_fits
+    code, res = reject_fits(_cfg(), date, file)
+    if code != 200:
+        return JSONResponse(status_code=code, content={"detail": res})
+    return FileResponse(res, media_type="application/fits", filename=res.name)
 
 
 @router.get("/api/runs/{date}/stars")

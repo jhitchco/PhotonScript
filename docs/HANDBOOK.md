@@ -2366,6 +2366,19 @@ Jeremy at the keyboard.
   service could not be read. Nothing is loaded, saved or sent.
   Code: `scheduler/sequence_preview.py`.
   `photonscript remote -- sequence-preview --check`
+- **Rejected Piggy subs from the desktop (PS-98, 2026-11-02):** rejects
+  are not synced and their FITS get deleted on the scope PC to keep it
+  lean; what stays is each sub's record and its star sidecar
+  (`<data_dir>/stars/<night>/<rig>/<stem>.json`, about 20 KB).
+  `GET /api/runs/<night>/stars/night?rig=piggyback&state=rejected` serves
+  them read only (a sub without a sidecar is listed, never measured);
+  `GET /api/runs/<night>/reject-fits?file=LIGHT/x.fits` downloads ONE
+  rejected FITS while it still exists (403 accepted, 404 deleted). From the
+  desktop: `photonscript reject-pull --date D [--fits LIGHT/x.fits]` saves
+  the sidecars + index.json under `rejects/<night>/<rig>` (never into
+  ninashare). The PS-96 report:
+  `photonscript remote -- flexure-report --date D --no-solve` (stored solves
+  only; `--no-solve` is required remotely).
 - **Adding a command:** read its code first; if it changes no hardware, sends
   nothing and deletes nothing, add a `[commands.<name>]` block with `class`,
   `flags` (and `write_flags`, `require`, `night_safe` when needed), run the
