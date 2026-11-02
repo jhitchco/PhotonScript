@@ -440,7 +440,7 @@ class CoolerStallWatch:
             await self._notify(
                 f"{self._label()}: cooler stalled ({reason}); camera reconnect "
                 f"{n}/{mx} errored: {msg}. Check the camera in NINA.", priority=1,
-                kind="act", safety=n >= mx)
+                kind="act", safety=True)
             return {"action": "error", "attempt": n, "detail": msg}
         self.pending = {"epoch": now, "attempt": n, "temp0": temp0,
                         "reason": reason}
@@ -522,6 +522,10 @@ class CoolerStallWatch:
                 f"a camera power cycle saves {hrs}",
                 other)
             await self._notify(msg, priority=1, kind="act", safety=True)
+        elif not ok:
+            # still stalled with a reconnect left: a cooling fault, told at
+            # once (never held or folded); recovered is info
+            await self._notify(msg, priority=prio, kind="act", safety=True)
         else:
             await self._notify(msg, priority=prio, kind="info")
         return {"action": result, "attempt": n}

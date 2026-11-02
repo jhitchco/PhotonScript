@@ -43,10 +43,15 @@ def legacy_kind(title: str, msg: str, prio: int) -> tuple[str, bool]:
         return "act", True
     if t == "PhotonScript safety":   # safety only while dark (after dawn: act)
         return ("act", True) if "UNREADABLE" in m else ("info", False)
+    # cooling faults are safety acts (2026-11-02); a recovery that worked is info
     if t == "PhotonScript cooler recovery":
-        return ("act", True) if "no more reconnects" in m else ("info", False)
+        return ("info", False) if "cooler recovered" in m else ("act", True)
     if t == "PhotonScript cooler":
-        return ("info", False) if "turning it on" in m else ("act", False)
+        return ("info", False) if "turning it on" in m else ("act", True)
+    if t == "PhotonScript cooler gate":
+        return ("act", True) if prio >= 1 else ("info", False)
+    if t == "PhotonScript SAFETY STOP":
+        return "act", True
     if t == "PhotonScript paused":
         if m.startswith("Unsafe while paused") and "FAILED" in m:
             return "act", True
@@ -61,7 +66,7 @@ def legacy_kind(title: str, msg: str, prio: int) -> tuple[str, bool]:
         return ("info", False) if "Disconnected it" in m else ("act", False)
     if t == "PhotonScript NANNY" and "consecutive rejected subs" in m:
         return "info", False               # the night pilot's push says it
-    if t in ("PhotonScript NANNY", "PhotonScript NINA watch", "PhotonScript cooler gate"):
+    if t in ("PhotonScript NANNY", "PhotonScript NINA watch"):
         return ("act", False) if prio >= 1 else ("info", False)
     if t == "PhotonScript night pilot":
         human = any(k in m for k in ("needs a human", "FAILED", "ALERT", "did NOT help"))

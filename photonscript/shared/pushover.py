@@ -51,6 +51,17 @@ Every notify() carries a kind, decided BEFORE the limiter above:
            priority 0, once per fact per night.
   * info   everything else: logged to the storyline only, never pushed.
 
+Safety acts are never suppressed, held or batched (PS-212 follow-up,
+2026-11-02): an act with safety=True (unsafe while not parked or still
+imaging, roof gating blind, a park failure, a cooling fault) is sent at
+once at any hour. It skips pushover_kinds, the cutoff, the plan heads-up
+fold, the once-per-fact rule, the daytime gate, the hourly cap, the
+cap-exempt budget and the monthly cap (it still counts toward them), and a
+failed send is retried once. The one exception: the byte-identical title
+and message already DELIVERED inside pushover_dedup_window_s is not sent
+again (the phone already shows it; this is what stops a flapping caller
+from burning the month). Any different text goes out.
+
 Callers without a kind default to info (opt in to noise, not out).
 pushover_kinds ("act,story") turns a kind's pushes off (a safety act is
 always sent). A story or non-safety act is pushed once per fact per night:
@@ -714,8 +725,12 @@ def _daytime_gate(state: dict, now: float, title: str, priority: int,
 
 def _gate(state: dict, now: float, month: str, key: str, priority: int,
           dedup_window_s: int, max_per_hour: int, monthly_cap: int,
-          exempt_key: str | None = None, exempt_max_per_hour: int = 2):
+          exempt_key: str | None = None, exempt_max_per_hour: int = 2,
+          safety: bool = False):
     """Pure decision function. Mutates `state`, returns (allow, reason, note).
+
+    safety: a safety act (see the module docstring). Only the identical
+    message already sent inside dedup_window_s stops it; no cap does.
 
     exempt_key: a cap-exempt page (see the module docstring): it skips the
     global hourly cap but at most exempt_max_per_hour pages per exempt_key
@@ -729,7 +744,7 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
         state["month"] = month
         state["month_count"] = 0
         state["month_capped"] = False
-    if state["month_count"] >= monthly_cap:
+    if state["month_count"] >= monthly_cap and not safety:
         if not state.get("month_capped"):
             state["month_capped"] = True
             # Let this one final notice through (as an emergency), then clamp.
@@ -756,11 +771,12 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
             if not by_key[k]:
                 by_key.pop(k)
         exempt = by_key.get(exempt_key, [])
-        if priority < 2 and len(exempt) >= max(0, int(exempt_max_per_hour)):
+        if (priority < 2 and not safety
+                and len(exempt) >= max(0, int(exempt_max_per_hour))):
             state["hour_ts"] = window
             state["suppressed"] = state.get("suppressed", 0) + 1
             return (False, "exempt-cap", "")
-    elif priority < 2 and len(window) >= max_per_hour:
+    elif priority < 2 and not safety and len(window) >= max_per_hour:
         state["hour_ts"] = window
         state["suppressed"] = state.get("suppressed", 0) + 1
         return (False, "hourly-cap", "")
@@ -783,6 +799,22 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
     return (True, "ok", note)
 
 
+# Seconds before the one retry of a safety act whose send failed.
+SAFETY_RETRY_S = 5.0
+
+
+async def _retry_safety(config, message: str, title: str, priority: int,
+                        sound: str, att: dict) -> bool:
+    """A safety act whose POST failed gets one more try (a network blip must
+    not lose an unsafe-while-unparked page). No keys set: nothing to retry."""
+    if not config.pushover_user_key or not config.pushover_api_token:
+        return False
+    logger.warning("Pushover safety act not sent, retrying in %.0f s: %s",
+                   SAFETY_RETRY_S, title)
+    await asyncio.sleep(SAFETY_RETRY_S)
+    return await _send_raw(config, message, title, priority, sound, **att)
+
+
 async def notify(config, message: str, title: str = "PhotonScript",
                  priority: int = 0, sound: str = "none", attachment=None,
                  kind: str | None = None, safety: bool = False,
@@ -793,8 +825,8 @@ async def notify(config, message: str, title: str = "PhotonScript",
     Title and message go out as plain ASCII (ascii_text).
 
     PS-212: kind 'act' | 'story' | 'info' (None = info: logged to the night
-    storyline, never pushed). safety=True: an act that is sent at any hour
-    and is never folded by the once-per-fact rule. fact: what the push
+    storyline, never pushed). safety=True: an act that is sent at once at
+    any hour, never held, folded or capped (see the module docstring). fact: what the push
     states, for the once-per-night rule (default: the title and the
     message with digits masked). thumb: a dashboard URL of the image for
     the storyline (the push itself carries attachment). cap_exempt: a key
@@ -831,6 +863,8 @@ async def notify(config, message: str, title: str = "PhotonScript",
 
     if not _cfg(config, "pushover_ratelimit_enabled"):
         sent = await _send_raw(config, message, title, priority, sound, **att)
+        if not sent and safety:
+            sent = await _retry_safety(config, message, title, priority, sound, att)
         _audit(config, title, message, priority, sent,
                "sent" if sent else "not-sent", kind)
         _story(sent, "sent" if sent else "not-sent", priority)
@@ -849,7 +883,8 @@ async def notify(config, message: str, title: str = "PhotonScript",
                 _audit(config, title, message, priority, False, "dup-fact", kind)
                 _story(False, "dup-fact", priority)
                 return False
-            if _cfg(config, "pushover_quiet_daytime") and _is_daytime(config):
+            if (not safety and _cfg(config, "pushover_quiet_daytime")
+                    and _is_daytime(config)):
                 ok, why = _daytime_gate(
                     state, now, title, priority,
                     float(_cfg(config, "pushover_daytime_title_window_h")) * 3600)
@@ -867,6 +902,7 @@ async def notify(config, message: str, title: str = "PhotonScript",
                 exempt_key=cap_exempt or None,
                 exempt_max_per_hour=int(
                     _cfg(config, "pushover_cap_exempt_max_per_hour")),
+                safety=safety,
             )
             if allow and fkey:
                 _fact_mark(state, night, fkey, now)
@@ -874,6 +910,8 @@ async def notify(config, message: str, title: str = "PhotonScript",
     except Exception as e:  # noqa: BLE001 - never let the limiter drop a real alert
         logger.warning("Pushover limiter error (%s), sending unthrottled", e)
         sent = await _send_raw(config, message, title, priority, sound, **att)
+        if not sent and safety:
+            sent = await _retry_safety(config, message, title, priority, sound, att)
         _audit(config, title, message, priority, sent, "limiter-error", kind)
         _story(sent, "limiter-error", priority)
         return sent
@@ -886,6 +924,9 @@ async def notify(config, message: str, title: str = "PhotonScript",
     if reason == "monthly-cap-final":
         priority = max(priority, 1)
     sent = await _send_raw(config, message + note, title, priority, sound, **att)
+    if not sent and safety:
+        sent = await _retry_safety(config, message + note, title, priority,
+                                   sound, att)
     reason_out = ("sent" if reason == "ok" else reason) if sent else "send-failed"
     _audit(config, title, message, priority, sent, reason_out, kind)
     _story(sent, reason_out, priority)
