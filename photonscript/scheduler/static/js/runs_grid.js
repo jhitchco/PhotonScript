@@ -14,6 +14,12 @@
 //       for the pointing / roof / unguided flags (the old caption tags ran
 //       across neighbouring cards).
 //   RunsGrid.loadingText(phase, info) -> the night loading line.
+//   PS-80: RunsGrid.bucket(state) -> 'review' | 'accepted' | 'rejected' (the
+//       state chips: syncing counts as accepted, off target as rejected);
+//       RunsGrid.sortCmp(key, scoreOf) -> the order inside each group for
+//       group(..., {cmp}): time (default), hfr / ecc / bkg highest first,
+//       stars fewest first, worst = lowest score first; missing values last,
+//       ties in time order.
 (function (root) {
     'use strict';
     const FILTER_ORDER = ['L', 'R', 'G', 'B', 'Ha', 'OIII', 'SII', 'OSC'];
@@ -68,12 +74,39 @@
                 a.target.localeCompare(b.target) ||
                 filterRank(a.filter) - filterRank(b.filter) ||
                 a.filter.localeCompare(b.filter));
-            sec.groups.forEach(g => g.subs.sort((a, b) =>
-                String(a.time || '').localeCompare(String(b.time || '')) ||
-                String(a.file || '').localeCompare(String(b.file || ''))));
+            sec.groups.forEach(g => g.subs.sort(opts.cmp || byTime));
             delete sec.map;
         });
         return out;
+    }
+    function byTime(a, b) {
+        return String(a.time || '').localeCompare(String(b.time || '')) ||
+            String(a.file || '').localeCompare(String(b.file || ''));
+    }
+    function bucket(st) {
+        return st === 'review' ? 'review'
+            : (st === 'accepted' || st === 'syncing') ? 'accepted' : 'rejected';
+    }
+    // [value of a sub, +1 ascending / -1 descending]
+    const SORTS = {
+        hfr: [s => s.hfr, -1],
+        ecc: [s => s.ecc, -1],
+        bkg: [s => s.background, -1],
+        stars: [s => s.stars, 1],
+    };
+    function sortCmp(key, scoreOf) {
+        const spec = key === 'worst' ? [scoreOf || (s => s.score), 1] : SORTS[key];
+        if (!spec) return byTime;
+        const [f, dir] = spec;
+        const num = s => {
+            const v = f(s);
+            return v == null || v === '' || !isFinite(Number(v)) ? null : Number(v);
+        };
+        return (a, b) => {
+            const x = num(a), y = num(b);
+            if (x == null || y == null) return (x == null) - (y == null) || byTime(a, b);
+            return (x - y) * dir || byTime(a, b);
+        };
     }
     function flat(sections) {
         const out = [];
@@ -127,6 +160,7 @@
     }
     const api = {group: group, flat: flat, countsLine: countsLine, badge: badge,
                  loadingText: loadingText, rigLabel: rigLabel,
+                 bucket: bucket, sortCmp: sortCmp,
                  FILTER_ORDER: FILTER_ORDER};
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.RunsGrid = api;
