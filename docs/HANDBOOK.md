@@ -322,6 +322,20 @@ Check a pending update on the scope without switching: `photonscript self-update
    cached under `<data_dir>/thumbs/`), per tile the median HFR / ecc of the
    zone's sidecar stars (`/mosaic-info`; else the backfill corner_ecc).
    Crops never take the grading lock; at most two run at once.
+   **Review screen (PS-80 part C).** A night has two tabs: **Review** (the
+   subs) and **Summary** (score, plan vs actual, calibration, phases and the
+   rest of the report, bundle / re-grade / library buttons); it opens on
+   Review when subs await review. State chips (needs review / accepted /
+   rejected / all states; default needs review while any is left) sit with
+   the rig / target / filter chips, and the grid sorts inside each target /
+   filter group by time, worst first (lowest score), HFR, ecc, stars or
+   background (remembered; the table keeps its header sort). A verdict
+   repaints in place and keeps the sub on screen until the view is redrawn.
+   On a screen 1200 px or wider the viewer docks on the right with the grid
+   still in view, the sub on show outlined there; **F** switches to full
+   screen and back (remembered). The burned-in `annotate=true` circles are
+   gone from the grid and the preview (the server path stays for other
+   callers): the S overlay replaces them.
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 

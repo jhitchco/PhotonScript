@@ -119,6 +119,37 @@
         .thumbs figure.sel img { box-shadow:0 0 0 3px #38bdf8; }
         #subTable tr.sel td { background:rgba(56,189,248,.14); }
         #selBar .btn { padding:.15rem .6rem; font-size:.78rem; }
+        /* PS-80: Summary / Review tabs, state chips, review sort */
+        #nightTabs { display:flex; gap:.3rem; margin:.5rem 0 .7rem;
+                     border-bottom:1px solid #1e293b; }
+        #nightTabs button { background:none; border:0; color:#94a3b8; cursor:pointer;
+                            font:inherit; font-weight:700; padding:.35rem .9rem;
+                            border-bottom:2px solid transparent; }
+        #nightTabs button.on { color:#e2e8f0; border-bottom-color:#38bdf8; }
+        #nightTabs .n { color:#eab308; font-weight:400; margin-left:.3rem; }
+        .fchip.st-review.active { background:#854d0e; }
+        .fchip.st-rejected.active { background:#7f1d1d; }
+        .fchip.st-accepted.active { background:#14532d; }
+        #subSort { background:#0b1220; color:#e2e8f0; border:1px solid #334155;
+                   border-radius:6px; font-size:.78rem; padding:.1rem .3rem; }
+        /* PS-80: the sub on show in the viewer, outlined in the grid / table */
+        .thumbs figure.cur .tbox { box-shadow:0 0 0 3px #f59e0b !important; }
+        #subTable tr.cur td { background:rgba(245,158,11,.14); }
+        /* PS-80: viewer docked on the right (the grid stays visible beside
+           it); F switches to full screen and back, remembered per browser */
+        :root { --dock-w: min(46vw, 820px); }
+        body.lb-docked main, body.lb-docked header { margin-right:var(--dock-w); }
+        #lightbox.docked { inset:0 0 0 auto; width:var(--dock-w); background:#020617;
+                           border-left:1px solid #1e293b; justify-content:flex-start;
+                           padding:.6rem .5rem; overflow:auto; z-index:40; }
+        #lightbox.docked #lbMain { flex-direction:column; align-items:stretch;
+                                   max-width:100%; }
+        #lightbox.docked #lbMain img#lbImg { max-width:100% !important; max-height:60vh; }
+        #lightbox.docked #lbPanel { width:auto; max-height:none; }
+        #lightbox.docked #pvWrap { max-width:100%; align-self:center; }   /* shrink-wrap: the overlay box = the image box */
+        #lightbox.docked #lbBar { flex-wrap:wrap; gap:.4rem .7rem; order:-2; }
+        #lightbox.docked #pvBar { order:-1; }   /* the controls on top, the panel below */
+        #lightbox.docked > .bd { font-size:.7rem; }
         @media (max-width: 900px) {
             #lbMain { flex-direction:column; align-items:center; }
             #lbMain img { max-width:96vw !important; }
@@ -213,6 +244,20 @@
                         style="padding:.1rem .6rem;font-size:.78rem;" hidden>Retry</button>
             </div>
             <div class="night-title" id="nightTitle"></div>
+            <div id="backfillBox" class="bd" hidden>
+                <div id="backfillLabel"></div>
+                <div class="pbar"><div id="backfillBar"></div></div>
+            </div>
+            <div id="thumbWarmBox" class="bd" hidden style="margin-top:.4rem;">
+                <div id="thumbWarmLabel"></div>
+                <div class="pbar"><div id="thumbWarmBar"></div></div>
+            </div>
+            <!-- PS-80: the night as two tabs; opens on Review when subs await review -->
+            <div id="nightTabs" role="tablist">
+                <button type="button" role="tab" data-tab="review" id="tabReviewBtn">Review<span class="n" id="tabReviewN"></span></button>
+                <button type="button" role="tab" data-tab="summary" id="tabSummaryBtn" class="on">Summary</button>
+            </div>
+            <div id="tabSummary" role="tabpanel">
             <div style="display:flex;gap:2.5rem;align-items:center;flex-wrap:wrap;">
                 <div style="text-align:center;">
                     <div class="score-ring" id="scoreTotal">–</div>
@@ -228,14 +273,6 @@
                     <input type="checkbox" id="regradeDiscard"> discard manual verdicts</label>
                 <button class="btn btn-secondary" id="libraryBtn" title="Hardlink QA-accepted lights into the Library folder for Syncthing">Rebuild library</button>
                 <button class="btn btn-secondary" id="libResetBtn" title="Empty the library and rebuild with APPROVED subs only — stops bulk transfers queued before the review gate">Reset library (approved only)</button>
-            </div>
-            <div id="backfillBox" class="bd" hidden>
-                <div id="backfillLabel"></div>
-                <div class="pbar"><div id="backfillBar"></div></div>
-            </div>
-            <div id="thumbWarmBox" class="bd" hidden style="margin-top:.4rem;">
-                <div id="thumbWarmLabel"></div>
-                <div class="pbar"><div id="thumbWarmBar"></div></div>
             </div>
             <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
             <table class="runs" id="pvaTable"></table>
@@ -259,15 +296,16 @@
             <div id="timeline" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Safety monitor <span class="bd">(NINA #1 vs NINA #2 cross-check, PS-1)</span></h2>
             <div id="safety" class="bd"></div>
-            <h2 style="margin-top:1.2rem;">Subs
-                <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
-                <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
+            </div><!-- /tabSummary -->
+            <div id="tabReview" role="tabpanel" hidden>
+            <h2 style="margin-top:.2rem;">Subs <span class="bd" style="font-weight:normal;">(viewer: S star overlay, L loupe, M 3x3, F full screen / docked)</span></h2>
             <div class="bd" id="scoreReportLine" title="PS-108: what the 0-100 score would do vs today's verdicts (photonscript score-report)"></div>
             <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
                 <span class="bd" id="reviewCounts"></span>
                 <button class="btn btn-primary" id="approveShownBtn" hidden>Approve shown</button>
                 <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
             </div>
+            <div id="stateChips" style="margin-bottom:.25rem;" title="PS-80: review state (the default is the subs still to review)"></div>
             <div id="rigChips" style="margin-bottom:.25rem;"></div>
             <div id="pointChips" style="margin-bottom:.25rem;"></div>
             <div id="targetChips" style="margin-bottom:.25rem;"></div>
@@ -277,6 +315,15 @@
                     <button type="button" class="btn btn-secondary" id="viewGridBtn" data-v="grid">Grid</button>
                     <button type="button" class="btn btn-secondary" id="viewTableBtn" data-v="table">Table</button>
                 </span>
+                <label class="bd" id="subSortBox" title="PS-80: order inside each target / filter group (worst first = lowest score)">sort
+                    <select id="subSort">
+                        <option value="time">time</option>
+                        <option value="worst">worst first</option>
+                        <option value="hfr">HFR</option>
+                        <option value="ecc">ecc</option>
+                        <option value="stars">stars</option>
+                        <option value="bkg">background</option>
+                    </select></label>
                 <span class="bd" id="thumbCount"></span>
                 <button type="button" class="btn btn-secondary" id="selAllBtn" style="padding:.15rem .6rem;font-size:.78rem;"
                         title="select every sub the chips show (shift-click a range, ctrl-click one)">Select all shown</button>
@@ -291,6 +338,7 @@
             <div class="bd warn" id="scoreHint" hidden></div>
             <div id="gridView"><div id="thumbStrip"></div></div>
             <div id="tableView" hidden><table class="runs" id="subTable"></table></div>
+            </div><!-- /tabReview -->
         </section>
     </main>
     <div id="lightbox" hidden>
@@ -321,13 +369,18 @@
             <button class="btn btn-secondary" onclick="lbNav(1)">next ▶</button>
             <button class="btn btn-secondary" onclick="closeLb()">close (Esc)</button>
         </div>
-        <div class="bd">&larr; &rarr; navigate &middot; A accept, R reject (then the next sub to review) &middot; U undo &middot; X cycles the verdict &middot; Esc close &middot; click image to zoom to that spot, move to pan, click again to reset (+/&minus; also zoom) &middot; originals are never deleted: reject only excludes from the library</div>
+        <div class="bd">&larr; &rarr; navigate &middot; A accept, R reject (then the next sub to review) &middot; U undo &middot; X cycles the verdict &middot; Esc close &middot; F full screen / docked &middot; click image to zoom to that spot, move to pan, click again to reset (+/&minus; also zoom) &middot; originals are never deleted: reject only excludes from the library</div>
     </div>
     <script>
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
     let subTarget = 'ALL';
     let subRig = 'ALL';
     let subOffTarget = false, subWindow = null;   // PS-67 chips
+    // PS-80: review state chip (null = auto: 'review' while any sub awaits
+    // review, else 'ALL'), grid sort, the night tab (null = auto)
+    let subStateF = null, nightTab = null;
+    let subSortKey = 'time';
+    try { subSortKey = localStorage.getItem('runsSubSort') || 'time'; } catch (e) { /* no storage */ }
     // PS-24: batch selection (files) and the last clicked index for shift-ranges
     let selected = new Set(), selAnchor = null;
     async function loadNights() {
@@ -427,7 +480,8 @@
         // keepView preserves the chosen filters across a reload (re-grade,
         // assign target). PS-24: verdicts never reload the night.
         if (!keepView) { subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL';
-                         subOffTarget = false; subWindow = null; }
+                         subOffTarget = false; subWindow = null;
+                         subStateF = null; nightTab = null; }
         selected = new Set(); selAnchor = null;
         try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
         document.querySelectorAll('.night-chip').forEach(el =>
@@ -693,6 +747,9 @@
         renderOptics(d.optics, date);
         loadOpticsTest(date);
         loadSubDoctor(date);
+        // PS-80: open on Review when the night has subs awaiting review
+        if (nightTab == null) nightTab = d.subs.some(s => subState(s) === 'review') ? 'review' : 'summary';
+        showTab(nightTab);
         renderSubs();
         renderReviewBar(d);
         renderFlexure(d.flexure, date);
@@ -940,12 +997,15 @@
         // filtered (then it's the same as the night button).
         const shown = (window._filteredSubs || subs)
             .filter(s => s.passed_qa && !s.reviewed);
-        const scoped = (window._filteredSubs || subs).length !== subs.length;
+        // PS-80: the state chip alone ("needs review") is not a scope
+        const scoped = shown.length !== rev;
         const sBtn = document.getElementById('approveShownBtn');
         sBtn.hidden = !scoped || shown.length === 0;
         const scopeLbl = [subRig !== 'ALL' ? subRig : null,
                           subTarget !== 'ALL' ? subTarget : null,
-                          subFilter !== 'ALL' ? subFilter : null]
+                          subFilter !== 'ALL' ? subFilter : null,
+                          subOffTarget ? 'off target' : null,
+                          subWindow ? 'time window' : null]
             .filter(Boolean).join(' · ');
         sBtn.textContent = 'Approve ' + shown.length + ' in review · ' + scopeLbl;
         sBtn.onclick = async () => {
@@ -961,6 +1021,7 @@
             btn.disabled = false;
         };
         paintNightChip(d.date, rev);
+        document.getElementById('tabReviewN').textContent = rev ? '\ud83d\udc41' + rev : '';
     }
     // PS-24: approve in place: mark the subs approved at once, POST, roll back
     // on an error; the result is a toast, not an alert, and the night is
@@ -1045,8 +1106,24 @@
             (f === 'ALL' ? ' ' + all.length : ' ' + counts[f]) + '</span>').join('');
         document.querySelectorAll('#filterChips .fchip').forEach(el =>  // only the filter chips (PS-116)
             el.addEventListener('click', () => { subFilter = el.dataset.f; renderSubs(); }));
-        const subs = subFilter === 'ALL' ? all
-                     : all.filter(s => s.filter === subFilter);
+        const fsubs = subFilter === 'ALL' ? all
+                      : all.filter(s => s.filter === subFilter);
+        // PS-80: state chips (needs review / accepted / rejected / all), last
+        // so their counts follow the chips above. A verdict repaints in place
+        // and keeps the sub on screen until the view is redrawn.
+        const stCounts = {review: 0, accepted: 0, rejected: 0};
+        fsubs.forEach(s => { stCounts[RunsGrid.bucket(subState(s))] += 1; });
+        if (subStateF == null)
+            subStateF = d.subs.some(s => subState(s) === 'review') ? 'review' : 'ALL';
+        const ST_LABEL = {review: '\ud83d\udc41 needs review', accepted: '\u2713 accepted',
+                          rejected: '\u2717 rejected', ALL: 'all states'};
+        document.getElementById('stateChips').innerHTML = ['review', 'accepted', 'rejected', 'ALL'].map(k =>
+            '<span class="fchip st-' + k + (subStateF === k ? ' active' : '') + '" data-st="' + k + '">' +
+            ST_LABEL[k] + ' ' + (k === 'ALL' ? fsubs.length : stCounts[k]) + '</span>').join('');
+        document.querySelectorAll('#stateChips .fchip').forEach(el =>
+            el.addEventListener('click', () => { subStateF = el.dataset.st; renderSubs(); }));
+        const subs = subStateF === 'ALL' ? fsubs
+                     : fsubs.filter(s => RunsGrid.bucket(subState(s)) === subStateF);
         window._filteredSubs = subs;  // everything the chips select (not just the tiles drawn)
         // PS-116: one subs view, Grid or Table; the chips above apply to both
         const isTable = subView === 'table';
@@ -1054,6 +1131,7 @@
         document.getElementById('tableView').hidden = !isTable;
         document.querySelectorAll('#viewToggle .btn').forEach(b =>
             b.classList.toggle('on', b.dataset.v === subView));
+        document.getElementById('subSortBox').hidden = isTable;   // the table sorts by its headers
         if (isTable) {
             renderSubTable(subs);
             renderReviewBar(d);
@@ -1067,12 +1145,12 @@
         // within (RunsGrid); the lightbox and shift-click walk that order.
         // Tiles load only while on screen, 6 requests in flight, with a
         // "thumbnails N / M" count; a fixed-size card, one badge inside it.
-        const sections = RunsGrid.group(subs, {rigOf: rigOf, stateOf: subState});
+        const sections = RunsGrid.group(subs, {rigOf: rigOf, stateOf: subState,
+                                               cmp: RunsGrid.sortCmp(subSortKey, subScore)});
         const shown = RunsGrid.flat(sections);
         window._shownSubs = shown;
         renderReviewBar(d);  // keep the scoped approve button in step with the chips
         const strip = document.getElementById('thumbStrip');
-        const ann = document.getElementById('annotateToggle').checked ? '&annotate=true' : '';
         let i = 0;
         strip.innerHTML = sections.map(sec =>
             '<section class="rig-sec" data-rig="' + escH(sec.rig) + '">' +
@@ -1081,7 +1159,7 @@
             sec.groups.map(g =>
                 '<div class="grp-h"><b>' + escH(g.target) + '</b> &middot; ' + escH(g.filter) +
                 ' <span class="bd">' + escH(RunsGrid.countsLine(g.counts)) + '</span></div>' +
-                '<div class="thumbs cards">' + g.subs.map(s => subCard(s, i++, ann)).join('') +
+                '<div class="thumbs cards">' + g.subs.map(s => subCard(s, i++)).join('') +
                 '</div>').join('') +
             '</section>').join('') || '<div class="grid-wait">No subs match the chips.</div>';
         if (window._tileLoader) window._tileLoader.stop();
@@ -1093,13 +1171,14 @@
                 (p.inFlight ? ' \u00b7 loading' : '');
         }});
         paintSelBar();
+        markCur();
     }
     // 2026-10-24: one card per sub: fixed 150 x 100 image box (placeholder
     // until the thumbnail lands, "no preview" on an error), the verdict as the
     // box outline, at most one short badge INSIDE the box (pointing / roof /
     // unguided), and a fixed two-line footer: time | filter exp | verdict,
     // then HFR | stars | bkg, each in its own column (no wrapping).
-    function subCard(s, i, ann) {
+    function subCard(s, i) {
         const b = RunsGrid.badge(s);
         const fe = encodeURIComponent(s.file);
         return '<figure data-file="' + escH(s.file) + '"' + (selected.has(s.file) ? ' class="sel"' : '') + '>' +
@@ -1110,7 +1189,7 @@
             'onclick="qaSet(event, \'' + fe + '\', \'rejected\')">\u2717</span>' +
             '</div>' +
             '<div class="tbox v-' + subState(s) + '" onclick="if (!selClick(event, ' + i + ')) openLb(' + i + ')">' +
-            '<img alt="" data-src="/api/runs/' + currentDate + '/thumb?file=' + fe + '&w=264' + ann + '">' +
+            '<img alt="" data-src="/api/runs/' + currentDate + '/thumb?file=' + fe + '&w=264">' +
             (b ? '<span class="tbadge ' + b.cls + '" title="' + escH(b.title) + '">' + escH(b.text) + '</span>' : '') +
             '</div>' +
             '<figcaption title="' + escH((s.time || '').slice(11, 19) + ' UTC \u00b7 ' + (s.target || '?') +
@@ -1307,7 +1386,6 @@
             '(graded before PS-108): <code>photonscript qa-rescore --date ' + escH(currentDate) +
             '</code> previews, <code>--apply</code> stores the scores (preview mode changes no verdict)' : '';
         document.getElementById('thumbCount').textContent = rows.length + ' subs';
-        const ann = document.getElementById('annotateToggle').checked ? '&annotate=true' : '';
         const tbl = document.getElementById('subTable');
         tbl.innerHTML = '<tr>' + SUB_COLS.map(c => '<th data-k="' + c[0] + '"' +
                 (c[3] ? '' : ' class="nosort"') + (c[2] ? ' title="' + escH(c[2]) + '"' : '') + '>' +
@@ -1323,7 +1401,7 @@
                 (subState(s) === 'offtarget' ? 'outline:2px solid #c084fc;'
                  : !s.passed_qa ? 'outline:2px solid #f87171;'
                  : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" data-src="/api/runs/' +
-                currentDate + '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' + ann + '"></td>' +
+                currentDate + '/thumb?file=' + encodeURIComponent(s.file) + '&w=264"></td>' +
                 '<td>' + (s.time || '').slice(11, 19) + '</td>' + targetCell(s) + '<td>' +
                 escH(s.filter) + '</td><td>' + Math.round(s.exp_s) + 's</td>' + scoreCell(s) +
                 verdictCell(s) + '<td>' + (s.hfr ?? '\u2013') + '</td><td>' + (s.fwhm_arcsec ?? '\u2013') +
@@ -1350,6 +1428,7 @@
         if (window._tileLoader) window._tileLoader.stop();
         window._tileLoader = SubTiles.lazy(tbl, 4);
         paintSelBar();
+        markCur();
     }
     function fmtEta(s) {
         if (s == null) return '';
@@ -1660,7 +1739,7 @@
     }
     function previewUrl(s) {
         return '/api/runs/' + currentDate + '/thumb?file=' + encodeURIComponent(s.file) +
-            '&w=1400' + (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
+            '&w=1400';   // PS-80: the star overlay is viewer.js's SVG, no burned-in circles
     }
     let lbIdx = 0;
     const lbPrefetched = new Set();
@@ -1697,8 +1776,62 @@
         btn.onclick = () => lbToggle();
         if (captionOnly) return;
         document.getElementById('lightbox').hidden = false;
+        applyDock();
+        markCur(true);
         loadLbPanel(s, i, _n);
     }
+    // ---- PS-80: the viewer docks on the right of a wide screen so the grid
+    //      stays in view while deciding; F toggles full screen (the PS-16
+    //      modal) and back. Remembered per browser; under 1200 px it is
+    //      always full screen.
+    let lbDocked = true;
+    try { lbDocked = localStorage.getItem('runsLbDocked') !== '0'; } catch (e) { /* no storage */ }
+    function applyDock() {
+        const open = !document.getElementById('lightbox').hidden;
+        const dock = open && lbDocked && window.innerWidth >= 1200;
+        document.getElementById('lightbox').classList.toggle('docked', dock);
+        document.body.classList.toggle('lb-docked', dock);
+    }
+    function toggleDock() {
+        lbDocked = !lbDocked;
+        try { localStorage.setItem('runsLbDocked', lbDocked ? '1' : '0'); } catch (e) { /* no storage */ }
+        applyDock();
+        if (window.PSViewer && PSViewer.redraw) setTimeout(PSViewer.redraw, 0);
+    }
+    window.addEventListener('resize', applyDock);
+    // outline the sub on show in the grid / table; scroll it into view when
+    // the viewer is docked beside them
+    function markCur(scroll) {
+        const open = !document.getElementById('lightbox').hidden;
+        const s = open && window._shownSubs ? window._shownSubs[lbIdx] : null;
+        document.querySelectorAll('#thumbStrip figure.cur, #subTable tr.cur').forEach(n =>
+            n.classList.remove('cur'));
+        if (!s) return;
+        const sel = '[data-file="' + (window.CSS && CSS.escape ? CSS.escape(s.file) : s.file) + '"]';
+        const nodes = document.querySelectorAll('#thumbStrip figure' + sel + ', #subTable tr.srow' + sel);
+        nodes.forEach(n => n.classList.add('cur'));
+        if (scroll && nodes[0] && document.body.classList.contains('lb-docked'))
+            nodes[0].scrollIntoView({block: 'nearest'});
+    }
+    // ---- PS-80: Summary / Review tabs
+    function showTab(t) {
+        nightTab = t;
+        document.getElementById('tabSummary').hidden = t !== 'summary';
+        document.getElementById('tabReview').hidden = t !== 'review';
+        document.querySelectorAll('#nightTabs button').forEach(b =>
+            b.classList.toggle('on', b.dataset.tab === t));
+    }
+    document.querySelectorAll('#nightTabs button').forEach(b =>
+        b.addEventListener('click', () => showTab(b.dataset.tab)));
+    document.getElementById('subSort').value = subSortKey;
+    if (document.getElementById('subSort').value !== subSortKey) {
+        subSortKey = 'time'; document.getElementById('subSort').value = 'time';
+    }
+    document.getElementById('subSort').addEventListener('change', (e) => {
+        subSortKey = e.target.value;
+        try { localStorage.setItem('runsSubSort', subSortKey); } catch (err) { /* no storage */ }
+        renderSubs();
+    });
     // ---- PS-108 side panel: score, every metric vs its gate, histogram.
     //      Rows come from /scorecard ready to draw (the page never compares a
     //      number with a limit). Keyboard flow is unchanged.
@@ -1981,7 +2114,10 @@
             (hd.bayer ? ' &middot; ' + hd.bayer + (hd.bayer_assumed ? ' (assumed)' : '') : '') +
             ' <span title="purple: bias floor, yellow: median, red line: saturation, red edge bar: pixels clipped at 0 ADU (left) or saturated (right); dashed: per-channel medians (OSC)">&#9432;</span>';
     }
-    function closeLb() { document.getElementById('lightbox').hidden = true; }
+    function closeLb() {
+        document.getElementById('lightbox').hidden = true;
+        applyDock(); markCur();
+    }
     function lbNav(d) {
         const n = window._shownSubs.length;
         openLb(((lbIdx + d) % n + n) % n);
@@ -2059,11 +2195,12 @@
             if (k === 'u') Review.undo();
             if (e.key === 'Enter' && currentDetail && window._shownSubs) {
                 const j = window._shownSubs.findIndex(x => subState(x) === 'review');
-                if (j >= 0) { e.preventDefault(); openLb(j); }
+                if (j >= 0) { e.preventDefault(); showTab('review'); openLb(j); }
             }
             return;
         }
         if (e.key === 'Escape') closeLb();   // PS-24: no refetch, the page is current
+        if (k === 'f') toggleDock();         // PS-80: docked / full screen
         if (e.key === 'ArrowLeft') lbNav(-1);
         if (e.key === 'ArrowRight') lbNav(1);
         if (e.key.toLowerCase() === 'x') lbToggle();
@@ -2147,7 +2284,6 @@
     document.getElementById('selAccept').onclick = () => selApply('accepted');
     document.getElementById('selReject').onclick = () => selApply('rejected');
     document.getElementById('selReview').onclick = () => selApply('review');
-    document.getElementById('annotateToggle').addEventListener('change', renderSubs);
     loadNights();
 
     // ---- re-grade all nights (sequential, background) ----
