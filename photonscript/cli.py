@@ -4566,6 +4566,112 @@ def remote_screen_cmd(
                                          monitor=monitor, quality=quality))
 
 
+def reject_pull(url: str, date: str, out_dir: Path, *, rig: str = "piggyback",
+                state: str = "rejected", fits: list | None = None, client=None,
+                err=None) -> int:
+    """PS-98: GET /api/runs/<date>/stars/night and save each sub's star
+    sidecar (<stem>.stars.json) plus index.json (record summaries) under
+    out_dir; with fits, also GET /api/runs/<date>/reject-fits for those
+    rejected subs. Prints one line per sub. Returns 0, 1 when a requested
+    FITS could not be fetched, 2 when the scope is unreachable / refuses."""
+    import json as _json
+    import httpx
+    err = err or sys.stderr
+    base = url.rstrip("/")
+    own = client is None
+    cl = client or httpx.Client(timeout=120)
+    try:
+        try:
+            r = cl.get(f"{base}/api/runs/{date}/stars/night",
+                       params={"rig": rig, "state": state})
+        except Exception as e:  # noqa: BLE001
+            print(f"reject-pull: {base} unreachable ({type(e).__name__})", file=err)
+            return 2
+        if r.status_code != 200:
+            print(f"reject-pull: refused ({r.status_code}): {r.text[:300]}", file=err)
+            return 2
+        rep = r.json()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        index = []
+        for sub in rep.get("subs") or []:
+            stem = Path(str(sub.get("file") or "")).stem
+            sc = sub.pop("sidecar", None)
+            sub["sidecar_file"] = None
+            if sc is not None and stem:
+                name = f"{stem}.stars.json"
+                (out_dir / name).write_text(_json.dumps(sc, separators=(",", ":")),
+                                            encoding="utf-8")
+                sub["sidecar_file"] = name
+            index.append(sub)
+            print(f"{stem[:60]:60s} {sub.get('state', ''):8s} "
+                  f"hfr {sub.get('hfr')} ecc {sub.get('ecc')} "
+                  f"{'sidecar' if sub['sidecar_file'] else 'no sidecar'}"
+                  f"{'' if sub.get('fits_on_scope') else ' (FITS gone)'}")
+        (out_dir / "index.json").write_text(_json.dumps(
+            {k: v for k, v in rep.items() if k != "subs"} | {"subs": index},
+            indent=1, default=str), encoding="utf-8")
+        print(f"{len(index)} {state} {rig} subs, {rep.get('with_sidecar', 0)} "
+              f"with a star sidecar -> {out_dir}", file=err)
+        rc = 0
+        for f in fits or []:
+            try:
+                fr = cl.get(f"{base}/api/runs/{date}/reject-fits",
+                            params={"file": f})
+            except Exception as e:  # noqa: BLE001
+                print(f"reject-pull: {f}: unreachable ({type(e).__name__})", file=err)
+                rc = 1
+                continue
+            if fr.status_code != 200:
+                try:
+                    why = fr.json().get("detail")
+                except Exception:  # noqa: BLE001
+                    why = fr.text[:200]
+                print(f"reject-pull: {f}: {fr.status_code} {why}", file=err)
+                rc = 1
+                continue
+            dest = out_dir / Path(str(f).replace("\\", "/")).name
+            dest.write_bytes(fr.content)
+            print(f"{dest}  ({len(fr.content)} B)", file=err)
+        return rc
+    finally:
+        if own:
+            cl.close()
+
+
+@app.command("reject-pull")
+def reject_pull_cmd(
+    date: str = typer.Option("", "--date", help="Night (YYYY-MM-DD, the evening "
+                                                "date); default the last night"),
+    rig: str = typer.Option("piggyback", "--rig", help="piggyback | rc16"),
+    state: str = typer.Option("rejected", "--state",
+                              help="rejected | accepted | all"),
+    fits: List[str] = typer.Option([], "--fits",
+                                   help="Also download this rejected sub's FITS "
+                                        "(its file as in the subs log, e.g. "
+                                        "LIGHT/x.fits); repeat for more"),
+    out: str = typer.Option("", "--out", help="Folder (default "
+                                              "rejects/<night>/<rig> here)"),
+    url: str = typer.Option(REMOTE_DEFAULT_URL, "--url", envvar="PS_REMOTE_CLI_URL",
+                            help="Scope scheduler (default the tailscale serve URL)"),
+):
+    """PS-98, from the desktop: save one night's rejected subs' star sidecars
+    and record summaries (small; they outlive the deleted reject FITS) and,
+    with --fits, a few reject FITS that are still on the scope PC. Read only
+    on the scope PC. Never point --out into the ninashare folder.
+
+    photonscript reject-pull --date 2026-10-23
+    photonscript reject-pull --date 2026-10-23 --fits LIGHT/M31_..._0042.fits
+    """
+    d = date or _last_night()
+    out_dir = Path(out) if out else Path("rejects") / d / rig
+    if "ninashare" in str(out_dir.resolve()).lower():
+        console.print("reject-pull: --out is inside ninashare (receive-only); "
+                      "pick another folder", markup=False)
+        raise typer.Exit(2)
+    raise typer.Exit(reject_pull(url, d, out_dir, rig=rig, state=state,
+                                 fits=list(fits)))
+
+
 @app.command("remote", context_settings={"allow_extra_args": True,
                                          "ignore_unknown_options": True})
 def remote_cmd(

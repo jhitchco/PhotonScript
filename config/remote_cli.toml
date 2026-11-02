@@ -112,6 +112,13 @@ flags = ["--nights", "--end", "--split", "--ma", "--me", "--night-hours", "--jso
 class = "read"                # stored solves only; --save left off
 flags = ["--nights", "--json"]
 
+[commands.flexure-report]
+class = "read"                # PS-98: stored solves only (--no-solve required, ASTAP
+                              # left off); writes only its report cache under
+                              # data_dir/flexure, as GET /api/flexure?refresh=true does
+flags = ["--date", "--no-solve", "--json"]
+require = ["--no-solve"]
+
 [commands.score-report]
 class = "read"
 flags = ["--date", "--json"]
