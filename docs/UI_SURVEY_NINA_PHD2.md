@@ -241,7 +241,11 @@ Findings:
      or ASCOM Profile Explorer);
    - tick "use DirectGuide", then reconnect.
 
-   Not changed here.
+   Changed 2026-11-03 06:5x local with Jeremy's go, while no app held the
+   mount (NINA #1 and PHD2 closed, NINA #2 mount disconnected): `UseDirectGuide`
+   False -> True under `HKLM\SOFTWARE\WOW6432Node\ASCOM\Telescope Drivers\
+   ASCOM.SoftwareBisque.Telescope` (the ASCOM profile; writable as the user).
+   It takes effect at the next mount connect.
 2. **InhibitSync True:** the driver already ignored syncs, so NINA #1's
    centering "syncs" never reached TheSky. A sync that is silently ignored
    leaves NINA re-slewing to the same wrong coordinates. That may explain

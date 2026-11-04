@@ -304,6 +304,15 @@ def _c_calibration_step(row, val, observed, config, ctx):
     rate = _num(cal.get("ra_rate_px_s"))
     rec = _num(cal.get("recommended_step_ms"))
     src = "PS-93"
+    # 2026-11-03: a rate in px/s measured at another binning scales with it
+    # (the 11-02 record: 73.4 px/s at bin 1 is 36.7 px/s at bin 2)
+    cal_b = _num(cal.get("binning"))
+    cur_b = _num(prof.get("binning") or (observed.get("api") or {}).get("binning")
+                 or (observed.get("log") or {}).get("binning"))
+    if rate and cal_b and cur_b and cal_b != cur_b:
+        rate = rate * cal_b / cur_b
+        rec, src = (_num(recommended_step_ms(dist, rate)) if dist else rec,
+                    f"PS-93 rate rescaled from bin {cal_b:g} to bin {cur_b:g}")
     if rec is None and dist and rate:
         rec, src = _num(recommended_step_ms(dist, rate)), "stored calibration rate"
     if rec is None:
@@ -321,6 +330,13 @@ def _c_calibration_step(row, val, observed, config, ctx):
         if steps < float(row.get("min_steps_fail", 3)):
             return FAIL, want, int(rec), (f"about {steps:.0f} step(s) over {dist:g} px at "
                                           f"{rate:.1f} px/s: too few to measure the axis")
+    # 2026-11-03: a FAIL / poor calibration's recommendation is not evidence
+    # for a plain miss (the 11-02 record, 78 deg from perpendicular at bin 1,
+    # asked for 60 ms against PHD2's own 450 ms at bin 2): a WARN until
+    # PS-93's next graded calibration measures the rate, never a blocker
+    if str(cal.get("grade") or "").upper() == "FAIL" or cal.get("poor"):
+        return WARN, (want + "; unverified: the stored calibration failed, PS-93's "
+                      "next calibration measures the rate"), int(rec), None
     return row["severity"], want, int(rec), None
 
 
@@ -1210,6 +1226,7 @@ async def collect(config, *, client=None, nina=None, raw: bool = False) -> dict:
                               "flip": cal.get("flip") or {},
                               "reasons": rec.get("reasons") or [],
                               "ra_rate_px_s": (rec.get("ra") or {}).get("rate_px_s"),
+                              "binning": rec.get("binning"),
                               "distance_px": rec.get("distance_px"),
                               "steps": rec.get("steps") or {}}
         src["calibration"] = {"ok": True, "note": f"PS-93 record {cal.get('grade') or 'none'}"}

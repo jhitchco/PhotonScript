@@ -141,6 +141,22 @@ def test_ga_min_move_and_calibration_step_targets():
     assert ok["ra_min_move"]["status"] == pa.PASS
 
 
+def test_calibration_step_from_a_failed_calibration_is_only_a_warn():
+    """2026-11-03: the stored calibration failed (78 deg from perpendicular)
+    and asked for 60 ms against PHD2's 450 ms; that is not evidence, so the
+    row says so and never blocks the guided night."""
+    cal = {"grade": "FAIL", "poor": True, "recommended_step_ms": 60,
+           "ra_rate_px_s": 73.378, "distance_px": 53, "binning": 1.0}
+    rows, _ = _eval({"log": {"calibration_step_ms": 450, "binning": 2},
+                     "profile": {"binning": 2, "calibration_distance_px": 53},
+                     "calibration": cal})
+    cs = rows["calibration_step_ms"]
+    # 73.4 px/s at bin 1 is 36.7 px/s at bin 2: about 120 ms, 450 ms is ~3 steps
+    assert cs["status"] == pa.WARN and cs["target"] == 120
+    assert "bin 1 to bin 2" in cs["desired"]
+    assert "stored calibration failed" in cs["desired"]
+
+
 @pytest.mark.parametrize("owner,algo,status", [
     ("protrack", "Hysteresis", pa.PASS), ("protrack", "Predictive PEC", pa.FAIL),
     ("phd2_ppec", "Predictive PEC", pa.PASS), ("phd2_ppec", "Lowpass2", pa.FAIL),
