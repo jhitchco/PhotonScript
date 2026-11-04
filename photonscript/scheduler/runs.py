@@ -1908,6 +1908,16 @@ def sync_goal_progress(config) -> list:
         store = get_store()
     except Exception:  # noqa: BLE001
         return []
+    # 2026-11-02 10:11: a test called this with a tmp config while the app
+    # store was the live one, so every live goal was rebuilt from an empty
+    # runs dir and saved as 0 h. Only sync a store that lives in this
+    # config's data dir.
+    store_path = getattr(store, "path", None)
+    store_dir = Path(store_path).parent if store_path else None
+    if store_dir is not None and store_dir.resolve() != Path(config.data_dir).resolve():
+        logger.warning("goal sync skipped: the project store (%s) is not in this "
+                       "config's data dir (%s)", store_dir, config.data_dir)
+        return []
     # (rig, target key, filter) -> list of accepted sub lengths (s); lengths
     # let an HDR plan split its short companion subs from the long set. PS-78:
     # keyed on the canonical target, so container-named subs count toward the

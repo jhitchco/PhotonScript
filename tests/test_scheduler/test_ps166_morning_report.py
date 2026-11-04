@@ -126,6 +126,21 @@ def test_library_line_and_latest_night(tmp_path, monkeypatch):
     assert "Library: 3 subs filed for sync (2026-10-06)" in card["lines"]
 
 
+def test_latest_night_counts_a_finished_night_without_subs(tmp_path):
+    """2026-11-02: TPoint night, roof closed by dew, no subs log. The card
+    shows it once it is over (an events log or a night story), never the
+    night still in progress."""
+    from photonscript.scheduler.runs import runs_dir
+    cfg = _setup(tmp_path)
+    (runs_dir(cfg) / "2026-11-02_events.jsonl").write_text("{}\n", encoding="utf-8")
+    story = tmp_path / "data" / "night_story"
+    story.mkdir(parents=True, exist_ok=True)
+    (story / "2026-11-03.jsonl").write_text("{}\n", encoding="utf-8")
+    assert mr.latest_night(cfg, today="2026-11-03") == "2026-11-02"
+    assert mr.latest_night(cfg, today="2026-11-04") == "2026-11-03"
+    assert mr.latest_night(cfg, today="2026-10-08") == NIGHT
+
+
 def test_no_subs_log(tmp_path):
     cfg = _cfg(tmp_path)
     card = mr.report_card(cfg, projects=[], calibration=False)

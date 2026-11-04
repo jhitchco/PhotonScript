@@ -93,15 +93,28 @@ TOP_REASONS = 3
 
 
 def latest_night(config, today: str | None = None) -> str | None:
-    """The newest night with a subs log, not after `today`."""
+    """The newest night with a subs log, not after `today`, or a newer
+    night that is over (before `today`) with only a run events log or a
+    night story: 2026-11-02 was a TPoint night closed by dew, no subs, and
+    the card kept showing 10-27 for a week."""
+    from pathlib import Path
     from photonscript.scheduler.runs import runs_dir
     today = today or datetime.now().strftime("%Y-%m-%d")
     try:
-        names = sorted(p.name[:10] for p in runs_dir(config).glob("*_subs.jsonl"))
+        names = [p.name[:10] for p in runs_dir(config).glob("*_subs.jsonl")]
     except OSError:
         return None
     names = [n for n in names if n <= today]
-    return names[-1] if names else None
+    other: list[str] = []
+    try:
+        other += [p.name[:10] for p in runs_dir(config).glob("*_events.jsonl")]
+        story = Path(getattr(config, "data_dir", "")) / "night_story"
+        if story.is_dir():
+            other += [p.stem[:10] for p in story.glob("*.jsonl")]
+    except OSError:
+        pass
+    names += [n for n in other if re.fullmatch(r"\d{4}-\d{2}-\d{2}", n) and n < today]
+    return max(names) if names else None
 
 
 def _goal_index(projects) -> dict:
