@@ -519,7 +519,11 @@
                     String(nm.t_utc || '').slice(11, 16) + ' UTC)</span></div>');
             }
             const sd = d.shutdown;
-            if (sd && !active) {
+            // 2026-11-03: the armer keeps its last shutdown record until the
+            // next armed night, so a 10-28 "COOLER STILL ON" showed for days;
+            // only this morning's shutdown is shown
+            const sdFresh = sd && sd.at && (Date.now() - Date.parse(sd.at)) < 20 * 3600 * 1000;
+            if (sd && sdFresh && !active) {
                 const when = sd.at
                     ? new Date(sd.at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
                     : '';
@@ -1245,6 +1249,12 @@
         try { d = await (await fetch('/api/night/pilot')).json(); } catch (e) { return; }
         if (!d || !d.line) { el.hidden = true; return; }
         const last = d.last || {};
+        // 2026-11-03: "no action tonight" with nothing behind it is noise;
+        // show the line only when the pilot did, advised or flagged something
+        const quiet = !d.last && !(d.actions || []).length && !(d.alerts || []).length &&
+            !(d.advice || []).length && !(d.optics || []).length &&
+            !(d.closed_roof || []).length;
+        if (quiet) { el.hidden = true; return; }
         const bad = last.status === 'failed' || last.result === 'failed' ||
             last.result === 'not_improved' || last.result === 'no_subs';
         el.style.borderColor = bad ? 'rgba(239,68,68,.7)'
@@ -1547,7 +1557,24 @@
                 d.date ? '(night of ' + d.date + ')' : '';
             if (!d.date) { box.textContent = 'No subs log yet.'; return; }
             const lines = (d.lines || []).length ? d.lines : ['No lights or stalls logged.'];
-            box.innerHTML = lines.map(l => '<div style="margin:.15rem 0;">' +
+            // 2026-11-03: colour each line by what it asks of Jeremy, and a
+            // summary row on top (red = needs you, amber = watch, green = good)
+            const level = l => /went wrong|fail|BLOCK|missing|STILL ON|unsafe|refused|not_running|offline|stuck|did not|error/i.test(l) ? 'red'
+                : /advise|would have|owed|reset|thin|partial|skipped|over the|warn|review|paused/i.test(l) ? 'amber'
+                : /complete|confirmed|finished|nothing owed|filed|kept/i.test(l) ? 'green' : 'plain';
+            const col = {red: '#f87171', amber: '#fbbf24', green: '#4ade80', plain: '#475569'};
+            const lv = lines.map(level);
+            const n = k => lv.filter(x => x === k).length;
+            const kept = lines.map(l => (/^[^:]+: (\d+) kept/.exec(l) || [0, 0])[1])
+                .reduce((a, b) => a + Number(b), 0);
+            const summary = '<div style="margin:0 0 .45rem;padding:.35rem .55rem;border-radius:6px;' +
+                'background:rgba(148,163,184,.08);font-weight:600;">' +
+                kept + ' subs kept · ' +
+                '<span style="color:' + col.red + '">' + n('red') + ' need you</span> · ' +
+                '<span style="color:' + col.amber + '">' + n('amber') + ' to watch</span> · ' +
+                '<span style="color:' + col.green + '">' + n('green') + ' good</span></div>';
+            box.innerHTML = summary + lines.map((l, i) => '<div style="margin:.15rem 0;' +
+                'padding-left:.45rem;border-left:3px solid ' + col[lv[i]] + ';">' +
                 esc(l) + '</div>').join('') +
                 '<div style="margin-top:.3rem;"><a href="/runs?night=' +
                 encodeURIComponent(d.date) + '">Runs page</a></div>';
@@ -1574,14 +1601,26 @@
                 '(night of ' + d.night + ', ' + (d.pushed || 0) + ' pushed)';
             if (!rows.length) { box.textContent = 'Nothing yet tonight.'; return; }
             const colour = {act: '#f87171', story: '#93c5fd', info: '#9ca3af'};
-            box.innerHTML = rows.slice().reverse().map(e => {
+            // 2026-11-03: a summary row on top, newest "act" item first in it
+            const acts = rows.filter(e => e.kind === 'act');
+            const stories = rows.filter(e => e.kind === 'story');
+            const newestAct = acts.length ? acts[acts.length - 1] : null;
+            const head = '<div style="margin:0 0 .45rem;padding:.35rem .55rem;border-radius:6px;' +
+                'background:rgba(148,163,184,.08);"><b>' + rows.length + ' entries</b> · ' +
+                '<span style="color:' + colour.act + ';font-weight:600;">' + acts.length +
+                ' need action</span> · <span style="color:' + colour.story + ';">' +
+                stories.length + ' story</span>' +
+                (newestAct ? '<div style="margin-top:.2rem;color:' + colour.act + ';">Latest: ' +
+                    esc(newestAct.title) + '</div>' : '') + '</div>';
+            box.innerHTML = head + rows.slice().reverse().map(e => {
                 const t = (e.t || '').slice(11, 16) + 'Z';
                 const dim = e.sent ? '' : 'opacity:.6;';
                 const tag = e.kind + (e.sent ? '' : ' (' + esc(e.reason) + ')');
                 const img = e.thumb ? '<div><a href="' + esc(e.thumb) +
                     '" target="_blank"><img src="' + esc(e.thumb) +
                     '" style="max-width:180px;margin-top:.2rem;border-radius:4px;" loading="lazy"></a></div>' : '';
-                return '<div style="margin:.25rem 0;' + dim + '"><span style="color:' +
+                return '<div style="margin:.25rem 0;padding-left:.45rem;border-left:3px solid ' +
+                    (colour[e.kind] || '#9ca3af') + ';' + dim + '"><span style="color:' +
                     (colour[e.kind] || '#9ca3af') + ';font-weight:600;">' + t + ' ' + tag +
                     '</span> ' + esc(e.title) + ': ' + esc(e.text).replace(/\n/g, '<br>') +
                     img + '</div>';
