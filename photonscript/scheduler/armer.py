@@ -800,11 +800,16 @@ class Armer:
         # off from arm until the sequence turns them on cool_lead min before dark.
         # ONLY here in the fresh-arm path — never in connect_all/restore, which
         # also run mid-night, so a restart while imaging can't kill cooling.
+        # 2026-11-03: not once the cool lead has begun. A re-arm at 19:25
+        # (30 -> 255 TPoint points) warmed both cameras mid-sequence.
         if getattr(self.config, "cooler_off_until_precool", True):
-            try:
-                await self._cooler_dew_off_all()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("pre-imaging cooler/dew off at arm failed: %s", e)
+            if self._in_cool_window(datetime.utcnow()):
+                logger.info("arm inside the cooling window: coolers left on")
+            else:
+                try:
+                    await self._cooler_dew_off_all()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("pre-imaging cooler/dew off at arm failed: %s", e)
         # PS-170: NINA #1 / #2 (and PHD2 when guided) running? One page.
         await self._apps_alert("At arm")
         await notify(self.config,
@@ -1065,6 +1070,18 @@ class Armer:
         for rig in rig_ids(self.config):
             out[rig] = await self.connect_all(rig)
         return out
+
+    def _in_cool_window(self, now: datetime) -> bool:
+        """True from cool_lead min before astro dusk to astro dawn: the
+        sequence may be cooling, so an arm must not force the coolers off.
+        No dusk / dawn in the plan = False (the old behaviour)."""
+        try:
+            dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
+            dawn = datetime.fromisoformat(self.plan["dawn_utc"].rstrip("Z"))
+        except Exception:  # noqa: BLE001
+            return False
+        lead = timedelta(minutes=int(getattr(self.config, "cool_lead_minutes", 30)))
+        return dusk - lead <= now < dawn
 
     async def _cooler_dew_off_all(self) -> None:
         """Force the cooler (warm) + dew heater OFF on every enabled rig. Called

@@ -105,6 +105,21 @@ def test_armer_cooler_dew_off_split_per_rig(tmp_path, monkeypatch):
     assert {c[1] for c in calls} == {"http://n1:1888/v2/api", "http://n2:1889/v2/api"}
 
 
+def test_arm_inside_the_cooling_window_leaves_coolers_on(tmp_path):
+    """2026-11-03: a re-arm at 19:25 local (30 -> 255 TPoint points) forced
+    both coolers off mid-sequence. From cool_lead before dusk to dawn the
+    arm must not; before pre-cool, or with no plan, it still does."""
+    from photonscript.scheduler.armer import Armer
+    a = Armer(_cfg(tmp_path, cool_lead_minutes=30))
+    a.plan = {"dusk_utc": DUSK, "dawn_utc": "2026-10-06T12:00:00Z"}
+    assert not a._in_cool_window(datetime(2026, 10, 6, 0, 59))
+    assert a._in_cool_window(datetime(2026, 10, 6, 1, 0))
+    assert a._in_cool_window(datetime(2026, 10, 6, 2, 30))
+    assert not a._in_cool_window(datetime(2026, 10, 6, 12, 0))
+    a.plan = {}
+    assert not a._in_cool_window(datetime(2026, 10, 6, 2, 30))
+
+
 # ------------------------------------------- noon cooler-off on its own
 
 def test_noon_cooler_off_once_per_night_and_logged(tmp_path):
