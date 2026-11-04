@@ -299,8 +299,13 @@ def header_lines(date: datetime, lat_deg: float | None = None,
     lat = " ".join(lat.split())
     rest, _src = site_rest(ref, weather)
     opts = ref.get("options") or list(DEFAULT_OPTIONS)
+    # an import file is fresh raw samples, never a recalibration: a copied
+    # "recal" caption made run5 (2026-11-03) read as one
+    ref_caption = ref.get("caption")
+    if ref_caption and re.search(r"recal", ref_caption, re.IGNORECASE):
+        ref_caption = None
     return ([ref.get("version_line") or DEFAULT_VERSION_LINE,
-             caption or ref.get("caption") or DEFAULT_CAPTION]
+             caption or ref_caption or DEFAULT_CAPTION]
             + [f":{o}" for o in opts]
             + [f"{lat} {date.year} {date.month} {date.day} {rest}"])
 

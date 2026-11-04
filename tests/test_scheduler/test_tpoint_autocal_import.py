@@ -493,6 +493,41 @@ def test_newest_input_text_skips_models(tmp_path):
     assert tal.newest_input_text(cfg) == _real()
 
 
+def _recal_text() -> str:
+    return (_real().replace("TheSky Version", "TheSkyX Version", 1)
+            .replace("Paramount MX", "Paramount MX recalibration", 1))
+
+
+def test_newest_input_text_skips_thesky_x_and_recal_runs(tmp_path):
+    """2026-11-02: a stray 32-bit TheSkyX wrote "TPoint recal run in.dat";
+    tonight's import files copied its version line and caption."""
+    import os
+    good = tmp_path / "TheSky Professional Edition 64" / "TPoint"
+    x = tmp_path / "TheSkyX Professional Edition" / "TPoint"
+    good.mkdir(parents=True)
+    x.mkdir(parents=True)
+    (good / "TPoint base run in.dat").write_bytes(REAL.read_bytes())
+    (good / "TPoint recal run in.dat").write_text(_recal_text(), encoding="ascii")
+    (x / "TPoint base run in.dat").write_text(_recal_text(), encoding="ascii")
+    t0 = os.path.getmtime(good / "TPoint base run in.dat")
+    for p in (good / "TPoint recal run in.dat", x / "TPoint base run in.dat"):
+        os.utime(p, (t0 + 60, t0 + 60))            # both newer than the good one
+    files = [{"rel": str(p.relative_to(r)), "root": str(r), "path": str(p),
+              "mtime": "", "_ts": os.path.getmtime(p)}
+             for r in (good.parent, x.parent) for p in r.rglob("*.dat")]
+    files.sort(key=lambda f: f["_ts"], reverse=True)
+    text = tal.newest_input_text(_cfg(tmp_path), {"files": files})
+    assert text == _real()
+
+
+def test_header_never_copies_a_recal_caption():
+    ref = ti.reference_header(_recal_text())
+    assert "recal" in ref["caption"]
+    hdr = ti.header_lines(datetime(2026, 11, 3), ref=ref)
+    assert hdr[1] == ti.DEFAULT_CAPTION
+    assert ti.header_lines(datetime(2026, 11, 3), ref=ref, caption="X")[1] == "X"
+
+
 # ------------------------------------------------------------- CLI / remote
 
 def test_cli_dry_run_names_the_import_file(tmp_path, monkeypatch):

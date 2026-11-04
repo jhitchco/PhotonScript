@@ -500,9 +500,16 @@ def _data_rank(f: dict) -> int:
 
 
 def _is_recal(f: dict, m: dict) -> bool:
-    """A recalibration model: "recal" in the run name or the caption."""
-    return bool(_RECAL_RE.search(run_key(f)[1])
-                or _RECAL_RE.search(str(m.get("caption") or "")))
+    """A recalibration model: "recal" in the run name, or in the caption
+    when the model holds terms fixed (a recal refits IH / ID and a few
+    terms, the rest held `=`). A caption alone is not enough: run5
+    (2026-11-03) was a full fit, nothing fixed, under a copied
+    "Paramount MX recalibration" caption."""
+    if _RECAL_RE.search(run_key(f)[1]):
+        return True
+    if not _RECAL_RE.search(str(m.get("caption") or "")):
+        return False
+    return any(t.get("fixed") for t in (m.get("terms") or {}).values())
 
 
 def _polar_terms(active: dict | None, base: dict | None):

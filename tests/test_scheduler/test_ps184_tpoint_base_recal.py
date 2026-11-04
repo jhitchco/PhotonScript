@@ -131,6 +131,52 @@ def test_recal_after_the_base_is_the_active_model(tmp_path):
     assert "active model (ProTrack uses it): the recal run" in text
 
 
+RUN5_OUTMOD = """Paramount MX recalibration
+T   92  25.4737   49.685  -0.0567
+  IH      -4469.2920     7.84718
+  ID      -2496.4863     5.02396
+  HHSH     +419.5692    14.26133
+  NP        +39.8986    14.78228
+  CH       -136.4582     9.69643
+  ME       -366.1862    23.63446
+  MA       -174.7822     6.10331
+  TF       +315.4994    38.41278
+END
+"""
+
+
+def _super_model(root: Path, outmod: str, age: float = 60) -> None:
+    tp = root / "TPoint"
+    indat = (F1010 / BASE[0]).read_bytes().decode("latin-1").replace(
+        "Paramount MX", "Paramount MX recalibration", 1)
+    (tp / "Super Model Indat.dat").write_text(indat, encoding="latin-1")
+    (tp / "Super Model Outmod.dat").write_text(outmod, encoding="latin-1")
+    now = time.time()
+    for n in ("Super Model Indat.dat", "Super Model Outmod.dat"):
+        os.utime(tp / n, (now - age, now - age))
+
+
+def test_recal_caption_on_a_full_fit_is_the_base(tmp_path):
+    """run5 (2026-11-03): a full Super Model fit, nothing held fixed, under
+    a copied "Paramount MX recalibration" caption is the new base model,
+    not a recal on top of the older one."""
+    root = _tree(tmp_path, {BASE[0]: 3600, BASE[1]: 3600})
+    _super_model(root, RUN5_OUTMOD)
+    st = tf.stats(_cfg(tmp_path, thesky_user_dir=str(root)))
+    assert st["model_file"].endswith("Super Model Outmod.dat")
+    assert st["model_kind"] == "base" and st["sky_rms_arcsec"] == 25.4737
+    assert st["recal"] is None and st["active_model"] == "base"
+
+
+def test_recal_caption_with_fixed_terms_is_still_a_recal(tmp_path):
+    root = _tree(tmp_path, {BASE[0]: 3600, BASE[1]: 3600})
+    _super_model(root, (F1010 / RECAL[1]).read_bytes().decode("latin-1"))
+    st = tf.stats(_cfg(tmp_path, thesky_user_dir=str(root)))
+    assert st["model_file"].endswith(BASE[1])
+    assert st["recal"]["model_file"].endswith("Super Model Outmod.dat")
+    assert st["active_model"] == "recal"
+
+
 def test_recal_only_folder_reports_it_as_the_model(tmp_path):
     st = _stats(tmp_path, {RECAL[0]: 60, RECAL[1]: 60})
     assert st["model_kind"] == "recal" and st["recal"] is None

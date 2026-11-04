@@ -1716,11 +1716,19 @@ def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
 
 def newest_input_text(config, listing: dict | None = None) -> str | None:
     """The newest real TPoint input file's text ("<run> in.dat" / "Super
-    Model Indat.dat"), the header source of the import file. Read only."""
+    Model Indat.dat"), the header source of the import file. Read only.
+    Skips the 32-bit TheSkyX folders and recal runs: on 2026-11-02 a stray
+    TheSkyX launch wrote "TPoint recal run in.dat", and every import file
+    after it copied its "!TheSkyX" version line and "recalibration"
+    caption."""
     from photonscript.scheduler import tpoint_files as tf
     lst = listing if listing is not None else tf.list_files(config)
     for f in lst.get("files") or []:          # newest first
         if tf._data_rank(f) != 0:
+            continue
+        if "theskyx" in Path(str(f.get("root") or "")).name.lower():
+            continue
+        if tf._RECAL_RE.search(tf.run_key(f)[1]):
             continue
         text = tf._read(f["path"])
         if text and tf.parse_data(text):
