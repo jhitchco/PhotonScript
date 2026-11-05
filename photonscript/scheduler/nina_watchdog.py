@@ -47,10 +47,35 @@ States (classify(), pure):
                reads SAFE, it is nina_watch_parked_after_dusk_min (default 15)
                past astro dusk and the mount has not tracked tonight (still
                parked, or unparked but not tracking)
+  idle_running 2026-11-05, RC16 only ("IDLE WHILE ARMED"): the armer is
+               RUNNING (not ARMED, a pause, PAUSED_UNSAFE or WATCHING),
+               it is between tonight's astro dusk and astro dawn (the
+               armer's plan; the sun window when the plan has none), NINA
+               #1's safety monitor reads SAFE, its API answers and no
+               instruction runs (no sequence running, or none loaded), for
+               nina_watch_idle_minutes (default 15). Held (the idle clock
+               restarts) while the armer (re-)dispatches
+               (Armer.dispatch_in_flight(): a Resume / Restart / PS-77 /
+               PS-93 re-dispatch stops NINA #1 on purpose) or a calibration
+               capture job runs. Not the Piggy-600: its companion may end or
+               never be dispatched on a normal night. 2026-11-04: NINA #1
+               logged "Sequence run was cancelled" at 23:05 (a Stop during a
+               slew) and sat idle until the roof closed at 02:34, armer
+               RUNNING, nothing paged: 3.5 h of RC16 time lost. The push
+               says what to do (Restart tonight from now on the dashboard,
+               or Pause if it was stopped on purpose).
+               nina_watch_idle_restart (off by default) asks the night
+               pilot to restart tonight from now once per night
+               (night_pilot.idle_restart, the PS-143 path); the push says
+               what it did. Not a QUIET_STATES state: the TPoint autocal
+               files that quiet_reason() trusts for 3 h stay fresh after a
+               mapping recipe (as on 11-04), and an autocal run needs the
+               armer DISARMED anyway.
   idle / off   outside the window, rig not expected, or nina_watch_mode off
 
 A non-ok state must hold for CONFIRM_TICKS consecutive ticks before it
-counts (stuck / parked: one tick, they already carry their own minutes), so a NINA restart does not alert. Then one Pushover per (rig, state)
+counts (stuck / parked / idle_running: one tick, they already carry their
+own minutes), so a NINA restart does not alert. Then one Pushover per (rig, state)
 per outage with what to do (priority 1 while the armer has a night), one
 recovery push when an alerted rig is ok again, events kind "nina_watch" in
 runs/<night>_events.jsonl, and the dashboard chip (GET /api/nina/watch).
@@ -75,7 +100,10 @@ down is a PS-212 safety act like API DOWN (is_safety()), so the page is not
 held by pushover_act_cutoff_local. Before, an API DOWN whose log then went
 quiet turned into silent and lost the safety flag.
 
-Observe only: this never starts, restarts, stops or commands NINA.
+Observe only: this never starts, restarts, stops or commands NINA. The one
+exception is opt-in and not here: nina_watch_idle_restart hands an
+idle_running page to the night pilot, which asks the armer for Restart
+tonight from now.
 """
 from __future__ import annotations
 
@@ -114,10 +142,12 @@ def is_safety(rig: str, state: str, reads: dict | None, live: bool) -> bool:
     if state in ("not_running", "api_down"):
         return True
     return state == "silent" and not (reads or {}).get("api_ok")
-BAD = ("api_down", "silent", "not_running", "stuck", "parked")
+BAD = ("api_down", "silent", "not_running", "stuck", "parked", "idle_running")
 TICK_S = 60
 CONFIRM_TICKS = 3
-CONFIRM = {"stuck": 1, "parked": 1}   # PS-154: no extra debounce
+# PS-154: no extra debounce (2026-11-05: idle_running carries its minutes)
+CONFIRM = {"stuck": 1, "parked": 1, "idle_running": 1}
+IDLE_RIGS = ("rc16",)   # 2026-11-05: idle_running judges NINA #1 only
 NIGHT_RUNNING = ("RUNNING", "WATCHING")   # PS-154: a night that should image
 LIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR", "WATCHING")
 # PS-212: "nothing happened in N min" states a known reason keeps quiet
@@ -165,6 +195,12 @@ def rearm_ok_min(cfg) -> float:
 def parked_after_dusk_min(cfg) -> float:
     """PS-154: a still-parked RC16 this long past astro dusk pages."""
     return max(0.0, _f(cfg, "nina_watch_parked_after_dusk_min", 15.0))
+
+
+def idle_minutes(cfg) -> float:
+    """2026-11-05: NINA #1 running no sequence this long while the armer is
+    RUNNING (dark, safe) pages IDLE WHILE ARMED."""
+    return max(1.0, _f(cfg, "nina_watch_idle_minutes", 15.0))
 
 
 def rig_name(cfg, rig: str) -> str:
@@ -286,12 +322,39 @@ def _long_ok(leaf: str | None) -> bool:
     return any(k in low for k in LONG_OK)
 
 
+def idle_blocker(r: dict) -> str | None:
+    """2026-11-05: why NINA #1 being idle is NOT counted right now (None =
+    it counts: idle while armed). Pure. r keys: idle_rig (the rig is judged
+    for idle), armer_running (the armer is exactly RUNNING), in_dark
+    (between tonight's astro dusk and dawn), safe, api_ok, seq_leaf ('' =
+    nothing runs, None = unknown), idle_hold (a dispatch in flight, a
+    calibration capture job, ...)."""
+    if not r.get("idle_rig"):
+        return "rig not judged for idle"
+    if not r.get("armer_running"):
+        return "armer not RUNNING"
+    if not r.get("in_dark"):
+        return "outside astro dusk to dawn"
+    if r.get("safe") is not True:
+        return "safety monitor not SAFE"
+    if not r.get("api_ok"):
+        return "API down"
+    if r.get("seq_leaf") != "":
+        return ("sequence state unknown" if r.get("seq_leaf") is None
+                else "a sequence runs")
+    if r.get("idle_hold"):
+        return str(r["idle_hold"])
+    return None
+
+
 def classify(r: dict, limit_min: float, stuck_min: float = 25.0,
-             parked_min: float = 15.0) -> tuple[str, str]:
+             parked_min: float = 15.0, idle_min: float = 15.0) -> tuple[str, str]:
     """(state, why) for one rig's reads. r keys: window, expected, api_ok,
     process, log_quiet_min, closed_at, seq_leaf, seq_exposure_s,
     leaf_age_min; PS-154: night_running (armer RUNNING / WATCHING),
-    mount_parked, mount_tracking, tracked_tonight, safe, past_dusk_min."""
+    mount_parked, mount_tracking, tracked_tonight, safe, past_dusk_min;
+    2026-11-05: idle_blocker()'s keys and idle_for_min (how long NINA has
+    been idle with no blocker, None when one holds)."""
     if not r.get("window"):
         return "idle", "outside the night window"
     if not r.get("expected"):
@@ -331,6 +394,15 @@ def classify(r: dict, limit_min: float, stuck_min: float = 25.0,
                 running = f"; NINA is running '{leaf}'" if leaf else ""
                 return "parked", (f"the RC16 mount is {what} {past:.0f} min "
                                   f"after astro dusk with the roof SAFE{running}")
+        idle_for = r.get("idle_for_min")
+        if idle_blocker(r) is None and idle_for is not None:
+            if idle_for >= idle_min:
+                return "idle_running", (
+                    f"no sequence has run for {idle_for:.0f} min (limit "
+                    f"{idle_min:.0f}) although the armer is RUNNING, it is "
+                    "dark and the roof is SAFE")
+            return "ok", (f"API answers; no sequence running for "
+                          f"{idle_for:.0f} min (pages at {idle_min:.0f})")
         return "ok", "API answers"
     if proc is False:
         return "not_running", "no NINA process and no API"
@@ -368,7 +440,21 @@ class NinaWatch:
             "state": "idle", "why": "", "since": None, "pending": None,
             "pending_n": 0, "alerted_state": None, "leaf": None,
             "leaf_since": None, "size": None, "size_at": None, "reads": {},
-            "checked_at": None, "tracked": False, "ok_since": None})
+            "checked_at": None, "tracked": False, "ok_since": None,
+            "idle_since": None})
+
+    def idle_track(self, rig: str, now: datetime, counts: bool) -> float | None:
+        """2026-11-05: minutes NINA has been idle with nothing excusing it
+        (idle_blocker() None on every tick since), None when something does
+        now. Any tick that does not count restarts the clock, so a pause, an
+        unsafe spell, a re-dispatch or a running sequence starts it over."""
+        s = self._rig(rig)
+        if not counts:
+            s["idle_since"] = None
+            return None
+        if s["idle_since"] is None:
+            s["idle_since"] = now
+        return max(0.0, (now - s["idle_since"]).total_seconds() / 60.0)
 
     def note_mount(self, rig: str, parked, tracking) -> bool:
         """PS-154: True once the mount was seen unparked and tracking this
@@ -458,7 +544,7 @@ class NinaWatch:
         rigs = {}
         for rig, s in self.rigs.items():
             reads = dict(s["reads"] or {})
-            for k in ("log_mtime",):
+            for k in ("log_mtime", "idle_since", "dawn_utc"):
                 if isinstance(reads.get(k), datetime):
                     reads[k] = iso(reads[k])
             rigs[rig] = {"state": s["state"], "why": s["why"],
@@ -526,13 +612,39 @@ def alert_text(cfg, rig: str, state: str, why: str, reads: dict,
                 "unparked or never started tracking: check NINA #1's Start "
                 "area (a wait that never ends), then unpark or re-arm. "
                 "PhotonScript changed nothing.").replace("  ", " ")
+    if state == "idle_running":
+        since = reads.get("idle_since")
+        dawn = reads.get("dawn_utc")
+        return (f"{who} is IDLE WHILE ARMED: {why}"
+                + (f" (idle since {_local_hm(cfg, since)} local" if since else "")
+                + (f", dark until {_local_hm(cfg, dawn)} local)" if dawn
+                   else (")" if since else ""))
+                + ". Nothing is imaging, so the rest of the night is being lost "
+                "(a Stop in NINA, a sequence that ended or failed). To fix: "
+                "Restart tonight from now on the dashboard (re-plans the rest "
+                "of tonight and re-dispatches it). If NINA #1 was stopped on "
+                "purpose, Pause on the dashboard keeps this quiet. "
+                "PhotonScript changed nothing.")
     return f"{who}: {state} ({why})"
 
 
-def recovery_text(cfg, rig: str, prev: str) -> str:
+def recovery_text(cfg, rig: str, prev: str, reads: dict | None = None,
+                  armer_state: str = "") -> str:
     label = {"not_running": "not running", "api_down": "API down",
              "silent": "up but silent", "stuck": "stuck on one instruction",
-             "parked": "parked after dusk"}.get(prev, prev)
+             "parked": "parked after dusk",
+             "idle_running": "idle while armed"}.get(prev, prev)
+    if prev == "idle_running":
+        r = reads or {}
+        leaf = r.get("seq_leaf")
+        if leaf:
+            return (f"{rig_name(cfg, rig)} is running a sequence again "
+                    f"('{leaf}') after {label}.")
+        why = idle_blocker(r) or "no longer idle"
+        if why == "armer not RUNNING" and armer_state:
+            why = f"the armer is {armer_state}"
+        still = "; NINA #1 still runs no sequence" if leaf == "" else ""
+        return f"{rig_name(cfg, rig)}: {label} cleared ({why}){still}."
     return (f"{rig_name(cfg, rig)} is OK again (API answers, log growing) "
             f"after {label}.")
 
@@ -651,13 +763,20 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
                read=None, notify=None, window: bool | None = None,
                monitor: NinaWatch | None = None,
                dusk_utc: str | datetime | None = None,
-               owned: set | None = None) -> dict:
+               owned: set | None = None,
+               dawn_utc: str | datetime | None = None,
+               idle_hold: str | None = None,
+               restart=None) -> dict:
     """One pass over the rigs. read(cfg, rig) -> reads and notify are
     injectable for tests. dusk_utc (PS-154): tonight's astro dusk (the
     armer's plan) for the parked check. owned: rigs whose API-down page
     belongs to the NINA offline watch (nina_offline.OfflineWatch.owned()):
-    their chip and events stay, the push is only recorded. Returns {rig:
-    update result}."""
+    their chip and events stay, the push is only recorded. 2026-11-05:
+    dawn_utc (with dusk_utc, the dark span the idle check judges),
+    idle_hold (why NINA #1 idle is expected right now: a dispatch in
+    flight, a calibration capture job), restart (async (cfg, now) ->
+    {"text", "acted"}: the night pilot's idle restart, called once per
+    idle_running page). Returns {rig: update result}."""
     from photonscript.shared.phd2_store import night_of
     from photonscript.shared.rigs import rig_ids
     monitor = monitor or MONITOR
@@ -669,11 +788,16 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
     night = night_of(cfg, now)
     limit = silent_minutes(cfg)
     dusk = _parse_utc(dusk_utc)
+    dawn = _parse_utc(dawn_utc)
     past_dusk = (None if dusk is None or armer_state != "RUNNING"
                  else (now - dusk).total_seconds() / 60.0)
+    # the idle check judges astro dusk to astro dawn (dawn flats and the
+    # hold before the dawn shutdown are after it); no plan: the sun window
+    in_dark = (dusk <= now < dawn) if dusk is not None and dawn is not None else win
     out = {}
     for rig in rig_ids(cfg):
         if m == "off" or not win:
+            monitor.idle_track(rig, now, False)
             reads = {"window": win}
             res = monitor.update(rig, "idle", "off (nina_watch_mode)" if m == "off"
                                  else "outside the night window", reads, night, now)
@@ -689,13 +813,32 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
                  "leaf_age_min": age,
                  "expected": armer_state in LIVE or reads.get("process") is True,
                  "night_running": armer_state in NIGHT_RUNNING,
-                 "tracked_tonight": tracked, "past_dusk_min": past_dusk}
+                 "tracked_tonight": tracked, "past_dusk_min": past_dusk,
+                 # 2026-11-05: idle while armed
+                 "idle_rig": rig in IDLE_RIGS,
+                 "armer_running": armer_state == "RUNNING",
+                 "in_dark": bool(in_dark), "idle_hold": idle_hold,
+                 "dawn_utc": dawn}
+        idle_for = monitor.idle_track(rig, now, idle_blocker(reads) is None)
+        reads["idle_for_min"] = idle_for
+        reads["idle_since"] = monitor._rig(rig)["idle_since"]
         state, why = classify(reads, limit, stuck_minutes(cfg),
-                              parked_after_dusk_min(cfg))
+                              parked_after_dusk_min(cfg), idle_minutes(cfg))
         res = monitor.update(rig, state, why, reads, night, now)
         out[rig] = res
         if res["alert"]:
             msg = alert_text(cfg, rig, res["state"], why, reads, armer_state)
+            acted = False
+            if res["state"] == "idle_running" and restart is not None:
+                try:
+                    r = await restart(cfg, now) or {}
+                except Exception as e:  # noqa: BLE001
+                    r = {"text": f" Night pilot: idle restart failed ({e})."}
+                acted = bool(r.get("acted"))
+                if acted:
+                    msg = msg.replace(" PhotonScript changed nothing.", "")
+                msg += str(r.get("text") or "")
+                res["restart"] = r
             _event(cfg, rig, res["state"], msg, now, pid=reads.get("pid"),
                    log_file=reads.get("log_file"), api_error=reads.get("api_error"))
             if m == "alert" and rig in (owned or ()) and not reads.get("api_ok"):
@@ -714,12 +857,13 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
                            title="PhotonScript NINA watch", reason="quiet-known-reason")
                 else:
                     live = armer_state in LIVE
+                    # the night pilot restarted it = handled (info)
                     await _push(cfg, msg, 1 if live else 0, notify,
-                                kind="act" if live else "info",
+                                kind="act" if live and not acted else "info",
                                 safety=is_safety(rig, res["state"], reads, live),
                                 cap_exempt=cap_exempt_key(rig, res["state"]))
         elif res["recovered"]:
-            msg = recovery_text(cfg, rig, res["prev"])
+            msg = recovery_text(cfg, rig, res["prev"], reads, armer_state)
             _event(cfg, rig, "ok", msg, now)
             if m == "alert" and rig in (owned or ()):
                 _held(cfg, msg, 0)
@@ -775,6 +919,41 @@ async def _push(cfg, msg: str, priority: int, notify=None, kind: str = "act",
         logger.warning("nina watch push failed: %s", e)
 
 
+def idle_hold_reason(armer) -> str | None:
+    """2026-11-05: why NINA #1 may be idle on purpose right now (the idle
+    clock restarts), else None: the armer (re-)dispatching (it stops NINA
+    #1 first and may wait up to 10 min for it), a calibration capture job
+    (it drives NINA without a sequence). Never raises."""
+    try:
+        f = getattr(armer, "dispatch_in_flight", None)
+        if callable(f) and f():
+            return "the armer is (re-)dispatching"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from photonscript.scheduler.armer import Armer
+        cal = Armer._calibration_busy()
+        if cal:
+            return f"calibration capture running on the {cal}"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _pilot_restart(cfg, armer):
+    """The night pilot's idle restart for tick(), None while it is off."""
+    try:
+        from photonscript.scheduler import night_pilot
+        if not night_pilot.idle_restart_on(cfg):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    async def _run(c, now):
+        return await night_pilot.idle_restart(c, armer, now)
+    return _run
+
+
 async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> None:
     """Background loop (app startup). Never raises, never commands NINA."""
     while True:
@@ -783,6 +962,7 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
             armer = get_armer()
             plan = getattr(armer, "plan", None)
             dusk = plan.get("dusk_utc") if isinstance(plan, dict) else None
+            dawn = plan.get("dawn_utc") if isinstance(plan, dict) else None
             state = str(getattr(armer, "state", "") or "")
             owned = None
             try:   # NINA offline watch first: it owns API-down pages
@@ -792,7 +972,9 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
                 owned = nina_offline.MONITOR.owned()
             except Exception as e:  # noqa: BLE001
                 logger.warning("nina offline tick failed: %s", e)
-            await tick(cfg, state, dusk_utc=dusk, owned=owned)
+            await tick(cfg, state, dusk_utc=dusk, owned=owned, dawn_utc=dawn,
+                       idle_hold=idle_hold_reason(armer),
+                       restart=_pilot_restart(cfg, armer))
             try:   # the Piggy-600 shooting lights on a mount that does not track
                 from photonscript.scheduler import piggy_guard
                 await piggy_guard.tick(cfg)

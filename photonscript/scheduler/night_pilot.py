@@ -85,6 +85,13 @@ diagnoses each tick; a shorten waits out a ladder step on the same rig.
 The night's best rung per rig / target is a suggestion in the next plan
 heads-up (<data_dir>/night_pilot/ladder_learned.json).
 
+Idle while armed (2026-11-05, idle_restart()): when the NINA watchdog pages
+IDLE WHILE ARMED (NINA #1 runs no sequence while the armer is RUNNING, dark
+and safe), nina_watch_idle_restart (off by default; night_pilot_mode act
+only) asks for Restart tonight from now once per night
+(<data_dir>/night_pilot/<night>_idle_restart.json); its own guards: RUNNING,
+no calibration capture job, RESTART_DARK_MIN of dark left.
+
 Guardrails (guard()): acts only while the armer is RUNNING (never ARMED,
 PAUSED_*, WATCHING a sideloaded night, COMPLETE); never while a calibration
 capture job runs, an arm recipe (TPoint mapping, tracking test, optics) is
@@ -2143,6 +2150,72 @@ async def _ask_restart(armer, now) -> dict:
         return await armer.restart(when="after_exposure", now=now)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": str(e)}
+
+
+# --------------------------------------------------------------------------
+# idle while armed (2026-11-05, the NINA watchdog's idle_running)
+# --------------------------------------------------------------------------
+
+def idle_restart_on(cfg) -> bool:
+    """nina_watch_idle_restart (off by default) and night_pilot_mode act."""
+    return bool(getattr(cfg, "nina_watch_idle_restart", False)) and mode(cfg) == "act"
+
+
+def _idle_restart_path(cfg, night: str) -> Path:
+    # its own file: the pilot tick rewrites <night>.json from its own copy
+    return state_dir(cfg) / f"{night}_idle_restart.json"
+
+
+async def idle_restart(cfg, armer, now: datetime | None = None) -> dict:
+    """The NINA watchdog saw NINA #1 idle while the armer is RUNNING
+    (2026-11-04: a manual Stop at 23:05 lost 3.5 h). Restart tonight from
+    now (PS-143, Armer.restart, after the current sub: NINA #1 is idle, so
+    at once) once per night. The armer's own refusals apply (state,
+    calibration capture, dark left) plus RESTART_DARK_MIN. Returns {"text":
+    the line for the watchdog's push ("" when switched off), "acted": a
+    restart was requested}. Never raises."""
+    if not idle_restart_on(cfg):
+        return {"text": "", "acted": False}
+    now = now or datetime.utcnow()
+
+    def out(text: str, acted: bool = False) -> dict:
+        return {"text": text, "acted": acted}
+    try:
+        night = _night(cfg, armer, now)
+        p = _idle_restart_path(cfg, night)
+        if p.exists():
+            prev = json.loads(p.read_text(encoding="utf-8"))
+            _event(cfg, night, "held", "idle while armed: restart held: already "
+                   f"restarted at {prev.get('t')} tonight", now)
+            return out(" Night pilot: already restarted tonight "
+                       f"({_hm(cfg, _parse_t(prev.get('t')))}); alert only.")
+        state = str(getattr(armer, "state", "") or "")
+        left = _dark_left_min(armer, now)
+        cal = _calibration_busy()
+        why = None
+        if state != "RUNNING":
+            why = f"armer is {state or 'unknown'}"
+        elif cal:
+            why = f"a calibration capture job runs on the {cal}"
+        elif left is not None and left < RESTART_DARK_MIN:
+            why = f"only {int(left)} min of dark left"
+        if why:
+            _event(cfg, night, "held", f"idle while armed: restart held: {why}", now)
+            return out(f" Night pilot: Restart tonight from now held ({why}).")
+        res = await _ask_restart(armer, now)
+        if not res.get("ok"):
+            _event(cfg, night, "failed",
+                   f"idle while armed: restart refused: {res.get('detail')}", now)
+            return out(" Night pilot: Restart tonight from now refused "
+                       f"({res.get('detail')}).")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"t": _iso(now)}), encoding="utf-8")
+        _event(cfg, night, "act", "idle while armed: Restart tonight from now", now)
+        return out(" Night pilot: Restart tonight from now requested (once per "
+                   "night; a second idle spell tonight is an alert only).", True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("night pilot idle restart failed: %s", e)
+        return out(f" Night pilot: Restart tonight from now failed ({e}).")
 
 
 async def _follow_undo_restart(cfg, armer, io, st, a, r: dict, now) -> None:
