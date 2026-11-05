@@ -371,6 +371,25 @@ def test_east_points_use_through_the_pole(tmp_path):
     assert v["through_pole"] is True
     assert v["obs_ra_h"] == pytest.approx(8.01) and v["obs_dec_d"] == pytest.approx(150.1)
     assert "+150 06 00.000" in v["line"]
+    assert v["pole_source"] == "hour angle"
+
+
+def test_pier_side_beats_the_hour_angle():
+    """2026-11-04 points 112 / 114: HA -0.25 h but the mount had not flipped
+    (PIERSIDE East); the HA sign put them through the pole and the fit went
+    from 18" to 450"."""
+    clock = Clock()
+    lst = 20.0 - 0.25                                       # HA -0.25 h
+    v = ti.sample_values(20.0, 30.0, 20.01, 29.9, lst, clock.now(), pier="East")
+    assert v["through_pole"] is False and v["pole_source"] == "pier side"
+    assert v["obs_ra_h"] == pytest.approx(20.01) and v["obs_dec_d"] == pytest.approx(29.9)
+    # and the other way: west of the pier past the meridian stays through the pole
+    v = ti.sample_values(20.0, 30.0, 20.01, 29.9, 20.25, clock.now(), pier="pierWest")
+    assert v["through_pole"] is True and v["obs_dec_d"] == pytest.approx(150.1)
+    # an unreadable pier side falls back to the HA sign
+    assert ti.through_pole(-0.25, "") == (True, "hour angle")
+    assert ti.through_pole(0.25, None) == (False, "hour angle")
+    assert ti.through_pole(-3.0, 0) == (False, "pier side")   # ASCOM pierEast = 0
 
 
 def test_imagelink_212_three_in_a_row_stops(tmp_path):

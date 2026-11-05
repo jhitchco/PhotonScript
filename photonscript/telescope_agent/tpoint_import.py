@@ -37,10 +37,11 @@ CRLF line ends, no END line (TheSky64 writes none).
   equation of the origins), the place tpoint_coverage documents for
   TheSky's own files.
 * observed = the mount's position as TheSky reports it
-  (sky6RASCOMTele.GetRaDec, JNow). On the east-looking side (HA < 0: the
-  side before the meridian flip) TPOINT's "through the pole" notation is
-  used, as in every real file: RA + 12 h and Dec 180 - Dec (or -180 - Dec
-  for a negative Dec). The west-looking side is written as read.
+  (sky6RASCOMTele.GetRaDec, JNow). On the east-looking side (the frame's
+  PIERSIDE West; HA < 0 only when no pier side was recorded, see
+  through_pole) TPOINT's "through the pole" notation is used, as in every
+  real file: RA + 12 h and Dec 180 - Dec (or -180 - Dec for a negative
+  Dec). The west-looking side is written as read.
   CAVEAT (HANDBOOK "Hand import"): TheSky reports the mount AFTER any
   TPoint pointing corrections. With "Apply pointing corrections" on, the
   rows measure the current model's residuals, not raw pointing errors.
@@ -148,8 +149,25 @@ def apparent_to_j2000(ra_h: float, dec_d: float, utc: datetime) -> tuple[float, 
 
 def beyond_pole(ha_h: float) -> bool:
     """TPOINT's through-the-pole notation is used on the east-looking side
-    (HA < 0), as in every real TheSky64 file (tpoint_coverage)."""
+    (HA < 0), as in every real TheSky64 file (tpoint_coverage). Only a
+    guess near the meridian: use through_pole() when the pier side is known."""
     return wrap_ha(ha_h) < 0
+
+
+def through_pole(ha_h: float, pier=None) -> tuple[bool, str]:
+    """(through the pole?, "pier side" | "hour angle"). The mount's own pier
+    side wins: ASCOM pierWest (FITS PIERSIDE "West", the mount west of the
+    pier looking east) is the through-the-pole side. The HA sign is only the
+    fallback: the Paramount need not flip at the meridian, and on
+    2026-11-04 two points at HA -0.25 h were still on the normal side
+    (PIERSIDE East, Dec offset +42' like the west half, not -42'); encoded
+    by HA they took the fit from 18" to 450". All 239 solved points that
+    night matched PIERSIDE."""
+    from photonscript.shared.pointing import pier_name
+    p = pier_name(pier)
+    if p is not None:
+        return p == "West", "pier side"
+    return beyond_pole(ha_h), "hour angle"
 
 
 def encode_observed(ra_h: float, dec_d: float, through_pole: bool) -> tuple[float, float]:
@@ -171,17 +189,19 @@ def obs_line(true_ra_h: float, true_dec_d: float, obs_ra_h: float,
 
 def sample_values(solved_ra_j2000_h: float, solved_dec_j2000_d: float,
                   mount_ra_h: float, mount_dec_d: float, lst_h: float,
-                  utc: datetime) -> dict:
+                  utc: datetime, pier=None) -> dict:
     """Everything one import line needs, from the solve and the mount
     snapshot: {"true_ra_h", "true_dec_d" (apparent), "obs_ra_h", "obs_dec_d"
-    (TPOINT notation), "lst_h", "ha_h", "through_pole", "line"}."""
+    (TPOINT notation), "lst_h", "ha_h", "through_pole", "pole_source",
+    "line"}. pier: the frame's PIERSIDE / ninaAPI SideOfPier (through_pole);
+    without one the HA sign decides."""
     tra, tdec = j2000_to_apparent(solved_ra_j2000_h, solved_dec_j2000_d, utc)
     ha = wrap_ha(float(lst_h) - float(mount_ra_h))
-    tp = beyond_pole(ha)
+    tp, src = through_pole(ha, pier)
     ora, odec = encode_observed(mount_ra_h, mount_dec_d, tp)
     return {"true_ra_h": tra, "true_dec_d": tdec, "obs_ra_h": ora,
             "obs_dec_d": odec, "lst_h": float(lst_h) % 24.0, "ha_h": round(ha, 4),
-            "through_pole": tp,
+            "through_pole": tp, "pole_source": src,
             "line": obs_line(tra, tdec, ora, odec, lst_h)}
 
 

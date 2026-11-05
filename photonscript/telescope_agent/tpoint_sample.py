@@ -124,7 +124,11 @@ CSV_FIELDS = ("utc", "point", "of", "side", "cmd_alt", "cmd_az", "file",
               "solved_dec_j2000_d", "image_stars", "solution_rms",
               "position_angle", "mount_ra_h", "mount_dec_d", "mount_alt",
               "mount_az", "lst_h", "jd", "apply_corrections", "add_mode",
-              "add_method", "added", "add_result", "add_error", "note")
+              "add_method", "added", "add_result", "add_error", "note",
+              "pierside")
+# pierside (the frame's PIERSIDE) is last so a night's CSV started before it
+# existed only gains a trailing column; tpoint_import.through_pole uses it
+# instead of the HA sign (two points mislabelled 2026-11-04)
 
 
 # ------------------------------------------------------------- scripts
@@ -596,6 +600,15 @@ def frame_bin(path) -> int:
         return 1
 
 
+def frame_pierside(path) -> str:
+    """The frame's FITS PIERSIDE (NINA writes the mount's SideOfPier), or ""."""
+    try:
+        from astropy.io import fits
+        return str(fits.getheader(str(path)).get("PIERSIDE") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ------------------------------------------------------------- CSV / event
 
 def csv_path(config, night: str) -> Path:
@@ -695,7 +708,8 @@ def run_sample(config, file: str | None = None, point: int | None = None,
         else:
             b = frame_bin(f)
             scale = float(getattr(config, "pixel_scale_arcsec", 0.236)) * b
-            row.update({"file": str(f), "bin": b, "scale": round(scale, 4)})
+            row.update({"file": str(f), "bin": b, "scale": round(scale, 4),
+                        "pierside": frame_pierside(f)})
             would, why = choose_method(config, load_probe(config))
             use = would if mode == "auto" else None
             if mode == "auto" and not use:

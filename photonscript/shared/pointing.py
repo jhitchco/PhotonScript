@@ -131,7 +131,7 @@ def _num(v):
 
 def pier_name(v) -> str | None:
     """FITS PIERSIDE / ninaAPI SideOfPier -> East | West."""
-    s = str(v or "").strip().lower()
+    s = "" if v is None else str(v).strip().lower()   # 0 = pierEast
     if s in ("east", "piereast", "0", "e"):
         return "East"
     if s in ("west", "pierwest", "1", "w"):

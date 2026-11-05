@@ -1261,7 +1261,8 @@ class LoopRun:
             self.say("  solved, but the mount position was not read: not recorded.")
             return row
         v = ti.sample_values(sol[0], sol[1], snap["ra_h"], snap["dec_d"],
-                             snap["lst_h"], snap["utc"])
+                             snap["lst_h"], snap["utc"],
+                             pier=row.get("header_pierside"))
         row.update(mount_ha_h=v["ha_h"], through_pole=v["through_pole"],
                    true_ra_app_h=round(v["true_ra_h"], 7),
                    true_dec_app_d=round(v["true_dec_d"], 6), import_line=v["line"])
