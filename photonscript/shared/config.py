@@ -1838,6 +1838,15 @@ class PhotonScriptConfig(BaseSettings):
                                          # can't see the RC16's meridian flip or a bad
                                          # AF (HFR trigger baselines on it), so this is
                                          # the in-sequence repair. 0 = off.
+    # PS-241: NINA's AF triggers measure from the last SUCCESSFUL AF, so a
+    # failed Piggy AF re-ran after every sub (2026-11-04). The Piggy AF
+    # triggers carry a back-off gate (scheduler/piggy_af_backoff.py, the
+    # reentry_gate_script with kind piggy_af): off | advise (log only) | on.
+    piggyback_af_backoff: str = "on"
+    piggyback_af_backoff_min: float = 60.0      # hold after the 1st failure,
+                                                # doubling per further failure
+    piggyback_af_backoff_max_min: float = 240.0  # ... at most this long
+    piggyback_af_fail_alert: int = 2   # one Pushover a night at N failed AFs
     piggyback_resume_grace_s: int = 300  # PS-25: after NINA #2 reads safe it holds
                                          # safety_confirm_seconds + this before its
                                          # AF and lights, so the OSC does not shoot

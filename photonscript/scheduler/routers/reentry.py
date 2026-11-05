@@ -5,6 +5,10 @@ POST /api/reentry/gate?kind=af|slew|center&label=&filter=&ra=&dec=
      `photonscript reentry-gate`). verdict SKIP = NINA skips the gated
      items (start AF / slew / center); anything else = run them.
 GET  /api/reentry           mode, limits and tonight's decisions
+
+PS-241: kind=piggy_af&trigger=time|temp|hfr is the Piggy-600 AF back-off
+gate (scheduler/piggy_af_backoff.py) on the same script and endpoint.
+GET  /api/piggy-af/backoff  the back-off decision now and tonight's events
 """
 from __future__ import annotations
 
@@ -23,7 +27,10 @@ def _cfg():
 @router.post("/api/reentry/gate")
 async def api_reentry_gate(kind: str = "af", label: str = "",
                            filter: str = "", ra: Optional[float] = None,
-                           dec: Optional[float] = None):
+                           dec: Optional[float] = None, trigger: str = ""):
+    if kind == "piggy_af":
+        from photonscript.scheduler import piggy_af_backoff
+        return await piggy_af_backoff.run_gate(_cfg(), trigger or "time", label)
     from photonscript.scheduler import reentry
     return await reentry.run_gate(_cfg(), kind, label, filter, ra, dec)
 
@@ -42,3 +49,19 @@ def api_reentry_status(night: Optional[str] = None):
             "kinds": sorted(reentry.gate_kinds(cfg)), "night": night,
             "decisions": rows[-50:],
             "lines": reentry.morning_lines(cfg, night)}
+
+
+@router.get("/api/piggy-af/backoff")
+async def api_piggy_af_backoff(trigger: str = "time"):
+    """PS-241: what the Piggy-600 AF back-off gate would answer now (not
+    logged), its mode and limits, and tonight's gate events."""
+    import asyncio
+    from photonscript.scheduler import piggy_af_backoff as bo
+    from photonscript.shared.phd2_store import night_of
+    cfg = _cfg()
+    night = night_of(cfg)
+    now = await asyncio.to_thread(bo.evaluate, cfg, trigger)
+    return {"mode": bo.mode(cfg), "limits": bo.limits(cfg),
+            "script": bo.gate_script(cfg), "night": night, "now": now,
+            "events": bo._events(cfg, night)[-50:],
+            "lines": bo.morning_lines(cfg, night)}
