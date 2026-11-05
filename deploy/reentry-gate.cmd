@@ -9,6 +9,8 @@ rem Exit 1 ONLY when the gate says SKIP (the CLI exits 3): NINA's
 rem SkipInstructionSetOnError then skips the rest of that small container.
 rem Every other outcome (RUN, service down, CLI missing, a timeout) exits 0,
 rem so the AF / slew / center run as before.
+rem PS-241: kind piggy_af --trigger=time, temp or hfr is the Piggy-600 AF
+rem back-off gate on NINA #2 (scheduler/piggy_af_backoff.py), same exits.
 "C:\astro\venv\Scripts\photonscript.exe" reentry-gate %* --from-nina
 if %ERRORLEVEL% EQU 3 exit /b 1
 exit /b 0

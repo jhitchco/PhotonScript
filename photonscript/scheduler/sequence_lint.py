@@ -185,6 +185,8 @@ def _check_af_hfr(seq: dict, r: LintResult, hand_built: bool = False) -> None:
 
 
 _REENTRY_GUARDS = {"af": "Autofocus.RunAutofocus",
+                   # PS-241: the Piggy-600 AF trigger back-off gate
+                   "piggy_af": "Autofocus.RunAutofocus",
                    "slew": "Telescope.SlewScopeToRaDec",
                    "center": "Platesolving.Center"}
 _REENTRY_ALLOWED = ("Utility.ExternalScript", "Autofocus.RunAutofocus",

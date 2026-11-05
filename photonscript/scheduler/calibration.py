@@ -1194,18 +1194,48 @@ def _osc_af_triggers(config) -> list:
     flip) and repairs a bad AF, which the HFR trigger can't: it baselines on
     the last AF (2026-09-26: after a 7-min gap in OSC subs, likely an AF, that
     overlapped the RC16's 04:00Z target change, the OSC sat near 6 px HFR for
-    five hours)."""
+    five hours).
+
+    PS-241: every trigger's runner is _osc_af_runner: RunAutofocus with
+    Attempts 1 (Hocus Focus re-tries once inside a run), behind the
+    back-off gate when it is on (scheduler/piggy_af_backoff.py). NINA's AF
+    triggers all measure from the last SUCCESSFUL AF, so without the gate a
+    failed AF re-ran after every sub (2026-11-04: ~9 min of AF per 3 min
+    sub, ~40 subs lost)."""
     from photonscript.scheduler.af_policy import hfr_trigger
     from photonscript.scheduler.nina_sequence_json import (
         _autofocus_hfr_trigger, _autofocus_temp_trigger, _autofocus_time_trigger)
     temp_c = float(getattr(config, "piggyback_af_temp_change_c", 1.5))
     hfr = hfr_trigger(config, "piggyback")   # 10% over 4 subs by default
     every_min = int(getattr(config, "piggyback_af_interval_min", 60))
-    trig = [_autofocus_temp_trigger(temp_c),
-            _autofocus_hfr_trigger(hfr["pct"], hfr["samples"])]
+    trig = [_autofocus_temp_trigger(temp_c, _osc_af_runner(config, "temp")),
+            _autofocus_hfr_trigger(hfr["pct"], hfr["samples"],
+                                   _osc_af_runner(config, "hfr"))]
     if every_min > 0:
-        trig.append(_autofocus_time_trigger(every_min))
+        trig.append(_autofocus_time_trigger(every_min,
+                                            _osc_af_runner(config, "time")))
     return trig
+
+
+def _osc_af_runner(config, trigger: str) -> list:
+    """PS-241: what a Piggy-600 AF trigger runs. [RunAutofocus (Attempts 1)]
+    or, with the back-off gate (piggy_af_backoff.gate_script), one small
+    container [gate, RunAutofocus] whose gate (ErrorBehavior 1) skips the
+    AF while the back-off after a failed AF holds; the light loop goes on."""
+    from photonscript.scheduler import piggy_af_backoff as bo
+    from photonscript.scheduler.nina_sequence_json import (
+        _autofocus, _external_script, _seq_container)
+    af = _autofocus()
+    af["Attempts"] = bo.TRIGGER_AF_ATTEMPTS
+    try:
+        script = bo.gate_script(config)
+    except Exception:  # noqa: BLE001
+        script = None
+    if not script:
+        return [af]
+    gate = _external_script(script, bo.script_args(trigger))
+    gate["ErrorBehavior"] = bo.GATE_ERROR_BEHAVIOR
+    return [_seq_container(bo.container_name(trigger), [gate, af])]
 
 
 def _osc_light_loop(config, segments: list | None = None) -> dict:

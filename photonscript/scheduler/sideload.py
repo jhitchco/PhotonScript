@@ -455,6 +455,7 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     sl._check_settle_gate(seq, r, settle_gate)   # PS-27
     sl._check_piggy_mount(seq, r, strict=not hand_built)   # PS-139
     sl._check_cover(seq, r, cover)   # PS-189
+    sl._check_reentry_gates(seq, r)   # PS-241: the Piggy AF back-off gate
     mount = sorted({_short(d["$type"])
                     for frag in (GUIDER_TYPES if hand_built else MOUNT_TYPES)
                     for d in sl._find_type(seq, frag)})

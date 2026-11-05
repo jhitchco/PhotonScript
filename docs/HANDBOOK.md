@@ -2114,6 +2114,47 @@ container, where it could fire before the start AF). Lint rule `af-hfr`
 dispatch gate refuses it): every HFR trigger has Amount >= 5 and
 SampleSize >= 3.
 
+### Piggy AF back-off: a failed AF no longer re-runs after every sub (PS-241, 2026-11-05)
+
+Why: 2026-11-04/05 every Piggy-600 AF from 20:52 local failed Hocus Focus
+validation ("AutoFocus failure (HfrRegression)", e.g. new focus HFR 3.29
+vs 2.32 before), Hocus Focus restored the old position and the subs stayed
+sharp (HFR 1.9 to 2.5 px). NINA's AF triggers (time, temperature, HFR
+increase) all measure from the last SUCCESSFUL AF, so none reset and they
+fired again after the next sub: about 9 min of AF per 3 min sub (2
+attempts x Hocus Focus's own re-try), about 40 subs lost.
+
+Mechanism (`scheduler/piggy_af_backoff.py`, `calibration._osc_af_runner`):
+every Piggy AF trigger runs a small container "Piggy AF <time|temp|hfr>
+(back-off gate)" = the re-entry gate script (`reentry_gate_script`, kind
+`piggy_af --trigger=...`, ErrorBehavior 1) + RunAutofocus with Attempts 1
+(Hocus Focus already re-tries once inside a run; Attempts 1 also without
+the gate). The service reads NINA #2's newest log backwards (success =
+BroadcastSuccessfulAutoFocusRun, failure = the RunAutofocus ERROR line,
+reason = the HFR validation warning) and answers SKIP while the newest
+failed AF is under `piggyback_af_backoff_min` (60) x 2^(failed episodes
+since the last good AF - 1), at most `piggyback_af_backoff_max_min` (240),
+old. Escape: the Piggy's graded lights since the failure (newest
+`piggyback_af_hfr_sample_size`) have a median HFR more than
+`piggyback_af_hfr_increase_pct` above the lights before it: RUN. Log
+unreadable, service down, any error: RUN. One Pushover a night ("PhotonScript
+Piggy-600 autofocus", act) once `piggyback_af_fail_alert` (2) AF episodes
+failed. `piggyback_af_backoff` off | advise | on (default). Run events
+kind `piggy_af_backoff`, `GET /api/piggy-af/backoff`, morning line "Piggy
+AF back-off: N failed AF(s); M triggered AF(s) skipped (~X min saved)".
+The companion lint now runs rule `reentry-gate` too. RC16 unchanged.
+Backtest of 11-04 (`tests/test_scheduler/test_piggy_af_backoff.py`): 5
+of the 23 triggered AFs run, 18 held.
+
+NINA #2 settings to review by hand (not changed by PhotonScript): Hocus
+Focus's final-HFR validation rejects fits that are fine for the OSC; the
+sweep minimum sat 40 to 50 steps inside the starting position every time,
+which points at backlash on the EAF (compare NINA's backlash compensation
+for the Piggy profile) or the validation threshold being too tight.
+
+Night test: a Piggy night with a failing AF: `GET /api/piggy-af/backoff`,
+the NINA #2 log shows the gate SKIP and lights continuing every sub.
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was
