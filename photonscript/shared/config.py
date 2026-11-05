@@ -130,6 +130,15 @@ class PhotonScriptConfig(BaseSettings):
     # many minutes after astro dusk with the roof safe. Observe only.
     nina_watch_stuck_minutes: float = 25.0
     nina_watch_parked_after_dusk_min: float = 15.0
+    # 2026-11-05 (11-04: a Stop in NINA #1 at 23:05, idle until the roof
+    # closed at 02:34, armer RUNNING, 3.5 h lost): page IDLE WHILE ARMED
+    # when NINA #1 runs no sequence this many minutes while the armer is
+    # RUNNING, between astro dusk and dawn, roof SAFE (not during a pause,
+    # unsafe, a re-dispatch or a calibration capture job). RC16 only.
+    nina_watch_idle_minutes: float = 15.0
+    # ... and then ask the night pilot for Restart tonight from now (PS-143)
+    # once per night. Off by default; needs night_pilot_mode act.
+    nina_watch_idle_restart: bool = False
     # Per outage (2026-10-12): a rig ok again for this many minutes re-arms
     # its once-per-state latch, so a second outage the same night pages
     # again (armed or not). 0 = once per rig and state per night.

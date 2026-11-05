@@ -185,7 +185,8 @@
                  and the next noon auto re-arm countdown. Filled by refreshArm(). -->
             <div id="armLifecycle" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
             <!-- PS-150: NINA watchdog chip (not running / API down / up but
-                 silent), one line per rig, from /api/nina/watch. -->
+                 silent / stuck / not imaging / idle while armed), one line
+                 per rig, from /api/nina/watch. -->
             <div id="ninaWatchChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
             <!-- Sub doctor chip: the current diagnosis per rig (cause + fix),
                  from /api/sub-doctor; hidden while every rig is healthy. -->
@@ -1179,7 +1180,8 @@
         let d;
         try { d = await (await fetch('/api/nina/watch')).json(); } catch (e) { return; }
         const label = {not_running: 'NOT RUNNING', silent: 'UP BUT SILENT',
-                       api_down: 'API DOWN', ok: 'OK'};
+                       api_down: 'API DOWN', stuck: 'STUCK', parked: 'NOT IMAGING',
+                       idle_running: 'IDLE WHILE ARMED', ok: 'OK'};
         const rows = [];
         let bad = false;
         for (const [rig, r] of Object.entries(d.rigs || {})) {

@@ -1,6 +1,8 @@
 """PS-150 NINA watchdog state.
 
-GET /api/nina/watch   per rig: ok | api_down | silent | not_running | idle,
+GET /api/nina/watch   per rig: ok | api_down | silent | not_running |
+                      stuck | parked | idle_running (2026-11-05: NINA #1
+                      runs no sequence while the armer is RUNNING) | idle,
                       why, since, whether it was pushed tonight, and the last
                       reads (API, process id, log file + last write, running
                       instruction). The dashboard chip reads this.
@@ -27,6 +29,7 @@ def api_nina_watch():
     out = nw.MONITOR.view()
     out["mode"] = nw.mode(cfg)
     out["silent_minutes"] = nw.silent_minutes(cfg)
+    out["idle_minutes"] = nw.idle_minutes(cfg)
     out["names"] = {r: nw.rig_name(cfg, r) for r in out["rigs"]}
     from photonscript.scheduler import frozen_sensor as fz
     out["frozen"] = {**fz.MONITOR.view(), "mode": fz.mode(cfg),

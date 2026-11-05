@@ -2877,6 +2877,44 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-11-04 (NINA #1 idle while armed): at 23:05:51 MST NINA #1 logged
+  "Sequence run was cancelled" during a slew (a manual Stop) and ran no
+  sequence until the roof closed at 02:34. The armer stayed RUNNING and
+  nothing paged (the log kept growing and no instruction ran, so neither
+  UP BUT SILENT nor STUCK applied): about 3.5 h of RC16 time lost. Now the
+  NINA watchdog (scheduler/nina_watchdog.py) has a state `idle_running`,
+  chip "IDLE WHILE ARMED", RC16 only: the armer exactly RUNNING, between
+  tonight's astro dusk and astro dawn (the armer's plan), NINA #1's safety
+  monitor SAFE, its API answers and no instruction runs (nothing running
+  or nothing loaded) for `nina_watch_idle_minutes` (15). Any tick that
+  does not qualify restarts the idle clock, so it never pages during an
+  operator pause, PAUSED_UNSAFE, WATCHING, ARMED, the dusk wait, dawn flats
+  or the hold before the dawn shutdown, a (re-)dispatch (Resume, Restart
+  tonight from now, the PS-77 safe-again and PS-93 recalibration
+  re-dispatches: `Armer.dispatch_in_flight()`, which also covers the up to
+  10 min wait for NINA #1 to stop), a calibration capture job, an
+  unreadable safety monitor or sequence state, or NINA #1's API down
+  (the other states own that). Flats, darks, TPoint mapping and tracking
+  test recipes run inside the sequence, so NINA is not idle then; a TPoint
+  autocal run needs the armer DISARMED. The planned gap between targets is
+  a running WaitForTime / loop, not idle. Not the Piggy-600: its companion
+  may end or never be dispatched on a normal night. One priority-1 push
+  per outage (the PS-150 latch, re-armed after `nina_watch_rearm_ok_min`):
+  "NINA #1 (RC16) is IDLE WHILE ARMED: no sequence has run for 15 min ...
+  (idle since 23:05 local, dark until 05:15 local) ... To fix: Restart
+  tonight from now on the dashboard ... If NINA #1 was stopped on purpose,
+  Pause on the dashboard keeps this quiet." A clear note when it runs again
+  or the night stops qualifying ("cleared (the armer is PAUSED_UNSAFE)").
+  It is a PS-212 act, not a safety act: after `pushover_act_cutoff_local`
+  (00:00) the push is held until morning. It does not use the PS-212 quiet
+  reasons: the TPoint autocal files they trust for 3 h stay fresh after a
+  mapping recipe (as on 11-04). Opt-in `nina_watch_idle_restart` (off;
+  night_pilot_mode act only): the page also asks the night pilot
+  (`night_pilot.idle_restart`) for Restart tonight from now (PS-143) once
+  per night (`<data_dir>/night_pilot/<night>_idle_restart.json`; held when
+  the armer is not RUNNING, a calibration capture job runs or under 45 min
+  of dark is left; a refused restart may be tried at the next outage); the
+  push then says what the pilot did, run events kind `night_pilot`.
 - 2026-10-07 (the first target held the RC16 all night, PS-180): the plan
   had M31 LRGB, NGC 604 and the Heart. Picked by priority, the Heart (60)
   took most of the budget, so M31 and NGC 604 were scaled to 1 or 2 subs

@@ -280,6 +280,9 @@ class Armer:
         self._pause_task: asyncio.Task | None = None
         self.last_restart: dict | None = None      # PS-143: last restart result
         self.last_dispatch_targets: list[str] = []  # PS-143: names in the push
+        # 2026-11-05: a (re-)dispatch in flight (NINA watchdog idle check)
+        self.dispatch_started_at: datetime | None = None
+        self.dispatch_ended_at: datetime | None = None
         # PS-152: tonight's dusk focus calibration (PS-144) once dispatched:
         # {"night", "container", "status": "dispatched" | "done", "field"}
         self.focus_cal: dict | None = None
@@ -3120,7 +3123,24 @@ class Armer:
                                   fail_state: str | None = "ERROR") -> bool:
         """companion=False skips the NINA #2 companion (a mid-night re-dispatch
         must not restart the Piggy-600's running sequence). fail_state=None
-        leaves the armer state alone on failure (the caller handles it)."""
+        leaves the armer state alone on failure (the caller handles it).
+        2026-11-05: dispatch_started_at / dispatch_ended_at mark a (re-)
+        dispatch in flight (NINA #1 stopped on purpose), so the NINA
+        watchdog's idle-while-armed check never counts it."""
+        self.dispatch_started_at = datetime.utcnow()
+        self.dispatch_ended_at = None
+        try:
+            return await self._dispatch_and_start_body(companion, fail_state)
+        finally:
+            self.dispatch_ended_at = datetime.utcnow()
+
+    def dispatch_in_flight(self) -> bool:
+        """True while a (re-)dispatch stops, loads or starts NINA #1."""
+        return (getattr(self, "dispatch_started_at", None) is not None
+                and getattr(self, "dispatch_ended_at", None) is None)
+
+    async def _dispatch_and_start_body(self, companion: bool,
+                                       fail_state: str | None) -> bool:
         # PS-183: reconcile a dispatched recipe with NINA's state BEFORE the
         # sequence is rebuilt, so one that never started is included again
         await self._check_recipe_before_redispatch()
