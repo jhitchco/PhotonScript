@@ -1,0 +1,268 @@
+{
+ "Response": [
+  {
+   "Event": "CAMERA-DISCONNECTED",
+   "Time": "2026-10-11T16:36:29.3706456-06:00"
+  },
+  {
+   "Event": "CAMERA-CONNECTED",
+   "Time": "2026-10-11T16:36:30.1653668-06:00"
+  },
+  {
+   "Event": "MOUNT-DISCONNECTED",
+   "Time": "2026-10-11T16:36:33.5960092-06:00"
+  },
+  {
+   "Event": "MOUNT-CONNECTED",
+   "Time": "2026-10-11T16:36:37.5607987-06:00"
+  },
+  {
+   "Event": "SAFETY-DISCONNECTED",
+   "Time": "2026-10-11T16:36:41.0412127-06:00"
+  },
+  {
+   "Event": "SAFETY-CONNECTED",
+   "Time": "2026-10-11T16:36:43.0495916-06:00"
+  },
+  {
+   "Event": "FILTERWHEEL-DISCONNECTED",
+   "Time": "2026-10-11T16:36:55.4638124-06:00"
+  },
+  {
+   "Event": "FILTERWHEEL-CONNECTED",
+   "Time": "2026-10-11T16:36:55.7493116-06:00"
+  },
+  {
+   "Event": "FOCUSER-DISCONNECTED",
+   "Time": "2026-10-11T16:36:59.1860509-06:00"
+  },
+  {
+   "Event": "FOCUSER-CONNECTED",
+   "Time": "2026-10-11T16:36:59.9266673-06:00"
+  },
+  {
+   "Event": "GUIDER-CONNECTED",
+   "Time": "2026-10-11T16:37:03.7641803-06:00"
+  },
+  {
+   "Event": "WEATHER-DISCONNECTED",
+   "Time": "2026-10-11T16:37:07.193098-06:00"
+  },
+  {
+   "Event": "WEATHER-CONNECTED",
+   "Time": "2026-10-11T16:37:07.3001901-06:00"
+  },
+  {
+   "Event": "SEQUENCE-STARTING",
+   "Time": "2026-10-11T19:36:21.2141172-06:00"
+  },
+  {
+   "IsSafe": true,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-11T21:45:29.0736044-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-11T21:45:32.5076689-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-11T21:47:20.160665-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:47:51.9669733-06:00",
+   "Position": 6107,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:48:09.959197-06:00",
+   "Position": 5997,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:48:27.9908709-06:00",
+   "Position": 5887,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:48:45.9466453-06:00",
+   "Position": 5777,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:49:07.9406849-06:00",
+   "Position": 5667,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:49:25.9727713-06:00",
+   "Position": 5557,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:49:45.9587876-06:00",
+   "Position": 5447,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:50:03.8892538-06:00",
+   "Position": 5337,
+   "HFR": 0
+  },
+  {
+   "IsSafe": false,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-11T21:50:09.0696437-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-11T21:50:12.0315716-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-11T21:50:12.6414771-06:00"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-11T21:50:13.1733385-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:50:43.970001-06:00",
+   "Position": 6107,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:51:01.9730623-06:00",
+   "Position": 5997,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:51:19.9628751-06:00",
+   "Position": 5887,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:51:37.9673604-06:00",
+   "Position": 5777,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:52:01.971456-06:00",
+   "Position": 5667,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:52:21.9777222-06:00",
+   "Position": 5557,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:52:41.9577722-06:00",
+   "Position": 5447,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T21:52:59.9762833-06:00",
+   "Position": 5337,
+   "HFR": 0
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-11T21:54:07.9618353-06:00"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-11T21:54:09.7231404-06:00"
+  },
+  {
+   "Event": "MOUNT-PARKED",
+   "Time": "2026-10-11T21:54:33.6596727-06:00"
+  },
+  {
+   "IsSafe": true,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-11T22:39:13.0571143-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-11T22:41:17.6893597-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-11T22:42:00.0047033-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T22:42:31.9952387-06:00",
+   "Position": 6107,
+   "HFR": 0
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-11T22:42:50.0145846-06:00",
+   "Position": 5997,
+   "HFR": 0
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-11T22:42:54.7164417-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-11T22:42:54.7453198-06:00"
+  },
+  {
+   "Event": "SEQUENCE-FINISHED",
+   "Time": "2026-10-11T22:42:57.973489-06:00"
+  },
+  {
+   "IsSafe": false,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-11T22:59:49.0599705-06:00"
+  },
+  {
+   "IsSafe": true,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-12T00:25:29.0669921-06:00"
+  },
+  {
+   "IsSafe": false,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-12T05:21:55.0665736-06:00"
+  },
+  {
+   "Event": "MOUNT-PARKED",
+   "Time": "2026-10-12T06:27:21.6763039-06:00"
+  },
+  {
+   "IsSafe": true,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-12T07:01:45.0558593-06:00"
+  },
+  {
+   "IsSafe": false,
+   "Event": "SAFETY-CHANGED",
+   "Time": "2026-10-12T07:49:25.0553277-06:00"
+  }
+ ],
+ "Error": "",
+ "StatusCode": 200,
+ "Success": true,
+ "Type": "API"
+}

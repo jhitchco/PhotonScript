@@ -1,0 +1,176 @@
+"""Guards for the PowerShell deploy scripts (no PowerShell in CI, so these
+check the text for the behaviors the tickets depend on)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
+
+
+def _read(name: str) -> str:
+    return (DEPLOY / name).read_bytes().decode("ascii")   # also: pure ASCII
+
+
+def test_installer_defaults_to_interactive_logon():
+    s = _read("install-autostart.ps1")
+    assert '[string]$LogonType = "Interactive"' in s
+    assert '[ValidateSet("Interactive", "S4U", "Password")]' in s
+    assert "-AtLogOn -User $account" in s
+    assert "-LogonType $LogonType" in s
+
+
+def test_installer_tags_the_launcher():
+    s = _read("install-autostart.ps1")
+    assert '$launcher = "task-$LogonType"' in s
+    assert "-Launcher $launcher" in s
+    w = _read("run-photonscript.ps1")
+    assert '[string]$Launcher = "console"' in w
+    assert "$env:PS_LAUNCHER = $Launcher" in w
+
+
+# --- PS-56: deploy.ps1 ships only committed work --------------------------------
+
+def test_deploy_refuses_dirty_tree_before_anything_else():
+    s = _read("deploy.ps1")
+    i_status = s.index("git -C $repo status --porcelain")
+    i_refuse = s.index("if (-not $IncludeWorkingTree)")
+    i_pull = s.index("git -C $repo pull --rebase=merges origin main")
+    i_tests = s.index("python -m pytest -q")
+    i_push = s.index("git -C $repo push origin HEAD:main")
+    i_post = s.index('"$Scope/api/update"')
+    assert i_status < i_refuse < i_pull < i_tests < i_push < i_post
+
+
+def test_deploy_add_all_only_behind_explicit_switch_and_confirmation():
+    s = _read("deploy.ps1")
+    assert s.count("git -C $repo add -A") == 1
+    block = s[s.index("if (-not $IncludeWorkingTree)"):s.index("git -C $repo pull --rebase")]
+    assert "add -A" in block and "Read-Host" in block
+    assert block.index("Read-Host") < block.index("add -A")
+    assert '$answer -ne "yes"' in block
+    assert "--autostash" not in s
+
+
+def test_deploy_requires_main_and_verifies_via_health():
+    s = _read("deploy.ps1")
+    assert '$branch -ne "main"' in s
+    assert "origin/main..HEAD" in s
+    assert '"$Scope/api/health"' in s and "$h.commit -eq $head" in s
+
+
+def test_deploy_include_working_tree_refuses_unmerged_paths():
+    s = _read("deploy.ps1")
+    block = s[s.index("if (-not $IncludeWorkingTree)"):s.index("git -C $repo add -A")]
+    assert "^(DD|AU|UD|UA|DU|AA|UU) " in block
+
+
+# --- PS-58: staged update + rollback ---------------------------------------------
+
+def test_wrapper_updates_through_self_update_and_can_roll_back():
+    w = _read("run-photonscript.ps1")
+    assert '$env:PS_WRAPPER_ROLLBACK = "1"' in w
+    assert "& $Exe self-update" in w
+    assert "pull --ff-only" not in w           # no unchecked pulls any more
+    i_sup = w.index("& $Exe supervise --mode $Mode")
+    i_reset = w.index("git -C $Repo reset --hard $prev")
+    i_done = w.index("& $Exe rollback-done --reason $why")
+    assert i_sup < i_reset < i_done
+    assert "$rc -eq 43" in w and "$skipUpdate = $true" in w
+
+
+def test_deploy_reports_scope_rollback_and_refusal():
+    s = _read("deploy.ps1")
+    assert "[switch]$AllowArmed" in s and "allow_armed=true" in s
+    assert '$u.status -eq "rolled_back" -and $u.bad_sha -eq $head' in s
+    assert '$u.status -eq "rejected" -and $u.target -eq $head' in s
+    assert "ConvertFrom-Json).detail" in s    # 409 says why
+
+
+# --- PS-60: :8100 from Tailscale and localhost only ----------------------------
+
+def _ps_array(s: str, name: str) -> list[str]:
+    import re
+    block = s[s.index(f"${name} = @("):]
+    block = block[:block.index(")")]
+    return re.findall(r'"([^"]+)"', block)
+
+
+def _nets(items):
+    import ipaddress
+    out = []
+    for it in items:
+        if "-" in it:
+            a, b = (ipaddress.ip_address(x) for x in it.split("-"))
+            out.append((int(a), int(b), a.version))
+        else:
+            n = ipaddress.ip_network(it)
+            out.append((int(n.network_address), int(n.broadcast_address), n.version))
+    return out
+
+
+def _covered(nets, ip) -> bool:
+    import ipaddress
+    a = ipaddress.ip_address(ip)
+    return any(lo <= int(a) <= hi and v == a.version for lo, hi, v in nets)
+
+
+def test_firewall_block_is_the_exact_complement_of_allow():
+    s = _read("firewall-8100.ps1")
+    allow, block = _nets(_ps_array(s, "AllowRemote")), _nets(_ps_array(s, "BlockRemote"))
+    for v, top in ((4, 2**32 - 1), (6, 2**128 - 1)):
+        spans = sorted((lo, hi) for lo, hi, ver in allow + block if ver == v)
+        start = 0 if v == 4 else 1           # IPv6 "::" is never a source
+        for lo, hi in spans:
+            assert lo == start, f"gap or overlap at {lo} (IPv{v})"
+            start = hi + 1
+        assert start == top + 1
+
+
+def test_firewall_keeps_tailnet_and_localhost_and_blocks_the_lan():
+    s = _read("firewall-8100.ps1")
+    allow, block = _nets(_ps_array(s, "AllowRemote")), _nets(_ps_array(s, "BlockRemote"))
+    for ip in ("100.94.189.77", "100.64.0.1", "127.0.0.1", "::1",
+               "fd7a:115c:a1e0::1234"):
+        assert _covered(allow, ip) and not _covered(block, ip), ip
+    for ip in ("192.168.23.50", "192.168.23.10", "10.0.0.5", "172.16.1.1",
+               "fe80::1", "8.8.8.8"):
+        assert _covered(block, ip) and not _covered(allow, ip), ip
+
+
+def test_firewall_script_is_a_dry_run_unless_asked():
+    s = _read("firewall-8100.ps1")
+    assert "[switch]$Apply" in s and "[switch]$Remove" in s
+    i_dry = s.index("if (-not $Apply)")
+    assert s.index("New-NetFirewallRule") > i_dry
+    assert "-Direction Inbound" in s and "-LocalPort $Port" in s
+    assert "Outbound" not in s.replace("Outbound traffic is not touched", "")
+
+# --- PS-87: recovery after a reboot -----------------------------------------------
+
+def test_reboot_recovery_order_and_read_only_mount():
+    s = _read("reboot-recovery.ps1")
+    i_up = s.index("$upMin -gt $MaxUptimeMin -and -not $Force")
+    i_health = s.index('"$Api/api/health"')
+    i_sky = s.index("Start-Process -FilePath $TheSkyExe")
+    i_mount = s.index("$mount = Get-TheSkyMount")
+    i_apps = s.index(r'"deploy\observatory-apps.ps1"')
+    assert i_up < i_health < i_sky < i_mount < i_apps
+    assert '"-Start"' in s and 'if ($DryRun) { $appArgs += "-DryRun" }' in s
+    # never drives the mount: IsConnected only
+    assert "sky6RASCOMTele.IsConnected" in s
+    for verb in ("Connect()", ".Park", "SlewToRaDec", "FindHome"):
+        assert verb not in s
+
+
+def test_recovery_installer_interactive_and_no_credentials():
+    for name in ("install-reboot-recovery.ps1", "reboot-recovery.ps1"):
+        s = _read(name)
+        for bad in ("Get-Credential", "-Password", "DefaultPassword",
+                    "ConvertTo-SecureString", "Autologon64.exe -accepteula"):
+            assert bad not in s, (name, bad)
+    s = _read("install-reboot-recovery.ps1")
+    assert "-LogonType Interactive" in s and "S4U" not in s
+    assert s.count("New-ScheduledTaskTrigger -AtLogOn -User $account") == 2
+    assert 'user32.dll,LockWorkStation' in s
+    assert "if ($DryRun)" in s and "[switch]$Uninstall" in s

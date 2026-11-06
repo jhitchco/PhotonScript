@@ -1,0 +1,16 @@
+TPOINT fit report (documented-format fixture, not a real file)
+
+  84 observations
+
+       coeff     change       value      sigma
+   1   IH         +0.000   -3484.630      1.230
+   2   ID         +0.000     +52.410      1.870
+   3   CH         +0.000     -12.900      2.010
+   4   NP         +0.000      +4.120      1.110
+   5   MA         +0.000     -45.200      0.960
+   6   ME         +0.000    +120.600      0.880
+   7   TF         +0.000      +8.300      2.400
+   8   HDSH       +0.000      +1.900      0.700
+
+  Sky RMS =    15.77
+  Popn SD =    16.20

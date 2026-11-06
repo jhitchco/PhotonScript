@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Focus crib sheet</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        main { display: block; max-width: 1100px; margin: 0 auto; }
+        .muted { opacity: .62; font-size: .8rem; }
+        table.crib { width: 100%; border-collapse: collapse; font-size: .95rem;
+                     font-variant-numeric: tabular-nums; margin: .6rem 0; }
+        table.crib th, table.crib td { padding: .35rem .55rem; text-align: right;
+                                       border-bottom: 1px solid var(--border); white-space: nowrap; }
+        table.crib th:first-child, table.crib td:first-child { text-align: left; }
+        table.crib tr.extrap td { opacity: .45; font-style: italic; }
+        table.crib td.meta { font-size: .78rem; opacity: .8; }
+        .gate { border-left: 4px solid #ef4444; padding: .6rem .8rem;
+                background: rgba(239,68,68,.08); border-radius: 6px; margin: .5rem 0 .8rem; }
+        .toolbar { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap; }
+        button.btn { padding: .35rem .8rem; border-radius: 6px; border: 1px solid var(--border);
+                     background: var(--bg-hover); color: inherit; cursor: pointer; }
+        .tscroll { overflow-x: auto; max-width: 100%; }
+        /* print: one page, black on white, no nav */
+        @media print {
+            @page { size: auto; margin: 12mm; }
+            header, .toolbar, .noprint { display: none !important; }
+            body, main, .panel { background: #fff !important; color: #000 !important;
+                                 box-shadow: none !important; border: none !important; }
+            * { color: #000 !important; }
+            table.crib th, table.crib td { border-bottom: 1px solid #999; padding: .2rem .4rem; }
+            table.crib tr.extrap td { opacity: 1; color: #555 !important; }
+            .gate { border: 2px solid #000; background: #fff; }
+        }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Focus crib sheet: focuser position by temperature and filter" %}
+    {% set active_page = "focus" %}
+    {% include "_header.html" %}
+    <main>
+        <section class="panel">
+            <div class="toolbar">
+                <h2 style="margin:0;">Focus crib sheet</h2>
+                <button class="btn" type="button" onclick="window.print()">Print</button>
+                <span class="muted" id="gen"></span>
+            </div>
+            <div id="out"><div class="muted">loading&hellip;</div></div>
+        </section>
+    </main>
+<script>
+(function () {
+    const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+    const num = (v, d) => (v == null ? '-' : (d == null ? String(v) : Number(v).toFixed(d)));
+    function render(d) {
+        const out = document.getElementById('out');
+        document.getElementById('gen').textContent = d.generated ? 'built ' + d.generated : '';
+        let h = '';
+        if (d.error) {
+            out.innerHTML = '<div class="gate"><b>No crib sheet</b>: ' + esc(d.error) + '</div>';
+            return;
+        }
+        h += '<p class="muted">RC16: ' + esc(d.formula || '') + ' &middot; slope ' +
+            num(d.slope_steps_per_c) + (d.slope_se != null ? ' &plusmn; ' + num(d.slope_se) : '') +
+            ' steps/C &middot; fit scatter ' + num(d.sigma_steps) + ' steps (limit ' + num(d.sigma_limit) +
+            ') &middot; CFZ ' + num(d.cfz_steps) + ' steps &middot; ' + num(d.n_points) +
+            ' AFs measured at ' + (d.temp_range ? num(d.temp_range[0], 1) + ' to ' + num(d.temp_range[1], 1) + ' C' : '?') +
+            '</p>';
+        if (!d.trusted || !d.grid) {
+            h += '<div class="gate"><b>Not printable: the focus model is not trusted.</b><ul>' +
+                (d.trust_reasons || ['model not trusted']).map(r => '<li>' + esc(r) + '</li>').join('') +
+                '</ul>The sheet comes back when the model passes its trust check (the same gate as drive mode).</div>';
+        } else {
+            const fs = d.filters || [];
+            h += '<div class="tscroll"><table class="crib"><thead><tr><th>Temp</th>' +
+                fs.map(f => '<th>' + esc(f) + '</th>').join('') + '</tr></thead><tbody>';
+            for (const r of d.grid) {
+                h += '<tr class="' + (r.extrapolated ? 'extrap' : '') + '"><td>' + r.temp + ' C' +
+                    (r.extrapolated ? ' <span class="muted">extrapolated</span>' : '') + '</td>' +
+                    fs.map(f => '<td>' + num(r.positions[f]) + '</td>').join('') + '</tr>';
+            }
+            const meta = (label, fn) => '<tr><td class="meta">' + label + '</td>' +
+                fs.map(f => '<td class="meta">' + fn(d.columns[f] || {}) + '</td>').join('') + '</tr>';
+            h += meta('offset (steps)', c => num(c.offset) + (c.offset_se != null ? ' &plusmn;' + num(c.offset_se) : ''));
+            h += meta('offset from', c => esc(c.offset_source));
+            h += meta('confidence', c => esc(c.confidence));
+            h += meta('AFs', c => num(c.n_afs));
+            h += meta('newest AF', c => esc(c.last_af || '-'));
+            h += '</tbody></table></div>';
+            h += '<p class="muted">Greyed rows lie outside the measured AF temperatures (extrapolated). ' +
+                'Confidence is at ' + num(d.confidence_temp, 1) + ' C (' + esc(d.confidence_basis || '') + ').' +
+                (d.counter && d.counter.pending ? ' <b>A focuser counter shift is waiting for a confirming AF: check one position by AF first.</b>' : '') +
+                '</p>';
+        }
+        const pb = d.piggyback;
+        if (pb) {
+            h += '<h3 style="margin:.9rem 0 .2rem;">Piggy-600 (OSC, its own EAF)</h3>';
+            if (!pb.trusted || !pb.positions) {
+                h += '<div class="muted">Not trusted, no row: ' +
+                    (pb.reasons || []).map(esc).join('; ') + '</div>';
+            } else {
+                const ts = Object.keys(pb.positions);
+                h += '<div class="tscroll"><table class="crib"><thead><tr><th>Temp</th>' +
+                    ts.map(t => '<th>' + t + ' C</th>').join('') + '</tr></thead><tbody><tr><td>OSC</td>' +
+                    ts.map(t => '<td' + (pb.positions[t].extrapolated ? ' style="opacity:.45;font-style:italic"' : '') +
+                        '>' + num(pb.positions[t].position) + '</td>').join('') +
+                    '</tr></tbody></table></div><p class="muted">slope ' + num(pb.slope_steps_per_c) +
+                    ' steps/C &middot; ' + num(pb.n_afs) + ' AFs &middot; newest AF ' + esc(pb.last_af || '-') + '</p>';
+            }
+        }
+        out.innerHTML = h;
+    }
+    fetch('/api/focus/crib').then(r => r.json()).then(render).catch(e => {
+        document.getElementById('out').innerHTML = '<div class="gate">Could not load: ' + esc(e) + '</div>';
+    });
+})();
+</script>
+</body>
+</html>
