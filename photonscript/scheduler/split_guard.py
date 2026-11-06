@@ -29,6 +29,11 @@ or holds the RC16 sequence. Two pieces, both on NINA #2's side:
    mount (the parked mount is "still", so the settle checks passed). Only
    an explicit AtPark true / TrackingEnabled false holds: a driver that
    reports neither, or a mount NINA #1 shows disconnected, fails open.
+   2026-11-06, one exception: disconnected right after a park (the mount
+   log's last real line before its offline marker says parked) holds as
+   "parked (offline after park)". A Paramount park disconnects TheSky's
+   mount, so on 11-05 the RC16 parked at 04:13 local and the gate passed
+   ten 300 s Piggy lights on the parked mount until 05:11.
 
 2. Abort on move (piggyback_abort_on_move, default OFF). on_rc16_mount()
    runs after each RC16 agent mount poll. When the poll sees a slew, a pier
@@ -197,20 +202,37 @@ async def read_rc16_mount(cfg):
 
 # ------------------------------------------------------------------ gate
 
+def offline_after_park(cfg, now_s: float) -> bool:
+    """The RC16 mount offline after a park, from tonight's mount log
+    (mount_log.parked_then_offline). Never raises: False on any error."""
+    try:
+        from photonscript.shared import mount_log
+        from photonscript.shared.phd2_store import night_of
+        when = datetime.fromtimestamp(now_s, timezone.utc).replace(tzinfo=None)
+        return mount_log.parked_then_offline(
+            mount_log.load(cfg, night_of(cfg, when)), when)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("offline-after-park check failed: %s", e)
+        return False
+
+
 async def run_settle_gate(cfg, label: str = "", *, read=None,
                           sleep=asyncio.sleep, clock=time.time,
-                          tracker=None, disconnected=None) -> dict:
+                          tracker=None, disconnected=None,
+                          parked_offline=None) -> dict:
     """Hold until the shared mount is still and PHD2 is not settling, at most
     piggyback_settle_timeout_s; PS-158: and while it is parked or not
     tracking, at most piggyback_tracking_hold_s. Returns {"verdict": PASS |
     TIMEOUT | UNKNOWN | OFF | ABORTED, "waited_s", "held": [...], "reason"}.
     No verdict stops a sub (the CLI always exits 0). read(cfg) -> ninaAPI
     mount dict or None, tracker and disconnected() are injectable for
-    tests."""
+    tests; parked_offline(cfg, now) (default offline_after_park) says the
+    disconnected mount is parked (2026-11-06)."""
     from photonscript.shared.mount_log import sample_from_nina
     from photonscript.shared.mount_motion import TRACKER
     tracker = tracker or TRACKER
     read = read or read_rc16_mount
+    parked_offline = parked_offline or offline_after_park
     base = {"rig": "piggyback", "label": label}
     if not gate_enabled(cfg):
         return {**base, "verdict": "OFF", "waited_s": 0.0, "held": [],
@@ -254,7 +276,14 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
         now = clock()
         sample = sample_from_nina(raw) if raw else None
         off = mount_not_tracking(raw) if track_gate and sample else None
-        if sample is None:
+        if (sample is None and track_gate and isinstance(raw, dict)
+                and raw.get("Connected") is False
+                and parked_offline(cfg, now)):
+            off = "parked (offline after park)"
+            unreadable = 0
+            if off not in held:
+                held.append(off)
+        elif sample is None:
             unreadable += 1
             if unreadable >= UNREADABLE_POLLS:
                 return done("UNKNOWN", "NINA #1 mount unreadable; shooting "

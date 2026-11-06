@@ -208,3 +208,96 @@ def test_status_endpoint_reports_the_tracking_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "_config", _cfg(tmp_path))
     s = r.api_split_guard_status()
     assert s["tracking_gate"] is True and s["tracking_hold_s"] == 900.0
+
+
+# --- 2026-11-06: offline right after a park ------------------------------------
+#
+# Night 2026-11-05: the RC16 parked at 11:13:17Z (targets done) and TheSky's
+# mount disconnected 13 s later (a Paramount park does that), so NINA #1
+# showed the mount disconnected; the gate counted three unreadable polls,
+# answered UNKNOWN and NINA #2 shot ten 300 s lights on the parked mount.
+
+def _offline():
+    return {"Connected": False}
+
+
+def test_offline_after_park_holds_like_parked(tmp_path):
+    clock = _Clock()
+    cfg = _cfg(tmp_path, piggyback_tracking_hold_s=300)
+    res, _ = _gate(cfg, [_offline()], tracker=_still_tracker(clock, True),
+                   clock=clock, parked_offline=lambda c, now: True)
+    assert res["verdict"] == "TIMEOUT" and res["waited_s"] == 300
+    assert res["held"] == ["parked (offline after park)"]
+    assert "shooting anyway" in res["reason"]
+
+
+def test_offline_after_park_then_reconnect_and_track_passes(tmp_path):
+    clock = _Clock()
+    seq = [_offline()] * 30 + [_mount(slewing=True)] * 3 + [_mount()]
+    res, _ = _gate(_cfg(tmp_path), seq, tracker=_still_tracker(clock),
+                   clock=clock, parked_offline=lambda c, now: True)
+    assert res["verdict"] == "PASS"
+    assert res["held"][0] == "parked (offline after park)"
+
+
+def test_offline_without_a_park_still_fails_open(tmp_path):
+    clock = _Clock()
+    res, reads = _gate(_cfg(tmp_path), [_offline()],
+                       tracker=_still_tracker(clock), clock=clock,
+                       parked_offline=lambda c, now: False)
+    assert res["verdict"] == "UNKNOWN" and len(reads) == sg.UNREADABLE_POLLS
+
+
+def test_tracking_gate_off_ignores_the_park(tmp_path):
+    clock = _Clock()
+    cfg = _cfg(tmp_path, piggyback_tracking_gate=False)
+    res, _ = _gate(cfg, [_offline()], tracker=_still_tracker(clock),
+                   clock=clock, parked_offline=lambda c, now: True)
+    assert res["verdict"] == "UNKNOWN"
+
+
+def _log(lines):
+    from datetime import datetime
+    return [{**r, "dt": datetime.strptime(r["t"], "%Y-%m-%dT%H:%M:%SZ")}
+            for r in lines]
+
+
+NIGHT_1105 = _log([
+    {"t": "2026-11-06T11:13:12Z", "parked": False, "tracking": True,
+     "slewing": False, "ra": 189.8, "dec": 89.59, "alt": 31.9},
+    {"t": "2026-11-06T11:13:17Z", "parked": True, "tracking": False,
+     "slewing": False, "ra": 189.9, "dec": 89.58, "alt": 31.9},
+    {"t": "2026-11-06T11:13:30Z", "offline": True, "parked": None,
+     "tracking": False, "slewing": False, "ra": None, "dec": None,
+     "alt": None, "az": None},
+])
+
+
+def test_mount_log_parked_then_offline_on_the_1105_lines():
+    from datetime import datetime
+    from photonscript.shared.mount_log import parked_then_offline
+    assert parked_then_offline(NIGHT_1105, datetime(2026, 11, 6, 11, 40))
+    assert not parked_then_offline(NIGHT_1105, datetime(2026, 11, 6, 11, 13, 20))
+    # offline straight from tracking (NINA #1 lost the mount): not parked
+    lost = [NIGHT_1105[0], NIGHT_1105[2]]
+    assert not parked_then_offline(lost, datetime(2026, 11, 6, 11, 40))
+    # a reconnect writes a new line: no longer offline
+    back = NIGHT_1105 + _log([{"t": "2026-11-06T12:00:00Z", "parked": False,
+                               "tracking": True, "slewing": False,
+                               "ra": 10.0, "dec": 20.0, "alt": 50.0}])
+    assert not parked_then_offline(back, datetime(2026, 11, 6, 12, 5))
+    assert not parked_then_offline([], datetime(2026, 11, 6, 11, 40))
+
+
+def test_offline_after_park_reads_tonights_mount_log(tmp_path):
+    import calendar
+    import json as _json
+    from photonscript.shared import mount_log
+    cfg = _cfg(tmp_path)
+    p = mount_log.log_path(cfg, "2026-11-05")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(_json.dumps({k: v for k, v in r.items() if k != "dt"})
+                         + "\n" for r in NIGHT_1105), encoding="utf-8")
+    at = calendar.timegm((2026, 11, 6, 11, 40, 0))
+    assert sg.offline_after_park(cfg, at) is True
+    assert sg.offline_after_park(cfg, calendar.timegm((2026, 11, 6, 11, 13, 14))) is False

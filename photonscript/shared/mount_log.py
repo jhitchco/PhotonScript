@@ -283,6 +283,22 @@ def state_at(lines: list[dict], when: datetime,
     return st, r
 
 
+def parked_then_offline(lines: list[dict], when: datetime) -> bool:
+    """2026-11-06: the mount is offline at `when` and the last real line
+    before it says parked: a Paramount park disconnects TheSky's mount, so
+    NINA #1 shows it disconnected right after its Park Scope (11-05: parked
+    11:13:17Z, offline 11:13:30Z) and it stays parked until a reconnect,
+    which writes a new line."""
+    st, line = state_at(lines, when)
+    if st != "offline" or line is None:
+        return False
+    i = lines.index(line)
+    for r in reversed(lines[:i]):
+        if not is_offline(r):
+            return _state(r) == "parked"
+    return False
+
+
 def segments(lines: list[dict], end: datetime | None = None,
              stale_s: float = STALE_S) -> list[dict]:
     """Merge lines into [{start, end, state}] (datetimes), state in
