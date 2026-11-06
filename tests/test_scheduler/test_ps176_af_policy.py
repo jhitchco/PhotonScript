@@ -433,28 +433,30 @@ def test_hdr_shorts_respect_moonrise(monkeypatch):
     assert lint(seq, guided=True).ok
 
 
-def test_smart_until_moonrise_loops_are_paced(monkeypatch, live_model):
+def test_smart_until_moonrise_blocks_run_once_and_lint_clean(monkeypatch,
+                                                            live_model):
     """2026-11-02 preflight: smart blocks carry no AF, so each "<filter>
-    until moonrise" container (it repeats until moonrise) held only
-    conditioned containers and failed lint loop-spin. Each now ends with
-    the PS-149 pace wait."""
+    until moonrise" container (then repeating until moonrise) failed lint
+    loop-spin and got a pace wait. 2026-11-06: the repeat itself was the
+    bug (L all window, no R, G, B); each block now runs once per pass
+    (LoopCondition(1) next to the moonrise TimeCondition), which also
+    bounds it, so no pace wait is needed."""
     monkeypatch.setattr(nsj, "_moon_window", lambda: {
         "available": True, "down_at_dusk": True, "illum_pct": 60,
         "rise_local_hh": 1, "rise_local_mm": 30})
-    seq = _gen([_m31()], monkeypatch, "smart")
-    wraps = _named(seq, nsj.FILTER_UNTIL_MOONRISE_SUFFIX)
-    assert len(wraps) == 7     # L, R, G, B long + R, G, B HDR shorts
-    for w in wraps:
-        last = _vals(w, "Items")[-1]
-        assert _short(last["$type"]) == "WaitForTimeSpan", w["Name"]
-        assert last["Time"] == nsj.TARGET_IMAGING_PACE_S
-    r = lint(seq, guided=True)
-    assert r.ok, [f"{f.rule}: {f.detail}" for f in r.findings
-                  if f.level == "ERROR"]
-    # every_block keeps its per-block AF as the pace: no extra wait
-    eb = _gen([_m31()], monkeypatch, "every_block")
-    for w in _named(eb, nsj.FILTER_UNTIL_MOONRISE_SUFFIX):
-        assert _short(_vals(w, "Items")[-1]["$type"]) != "WaitForTimeSpan"
+    for policy in ("smart", "every_block"):
+        seq = _gen([_m31()], monkeypatch, policy)
+        wraps = _named(seq, nsj.FILTER_UNTIL_MOONRISE_SUFFIX)
+        assert len(wraps) == 7     # L, R, G, B long + R, G, B HDR shorts
+        for w in wraps:
+            kinds = [_short(c["$type"]) for c in _vals(w, "Conditions")]
+            assert kinds == ["TimeCondition", "LoopCondition"], w["Name"]
+            assert _vals(w, "Conditions")[1]["Iterations"] == 1
+            last = _vals(w, "Items")[-1]
+            assert _short(last["$type"]) != "WaitForTimeSpan", w["Name"]
+        r = lint(seq, guided=True)
+        assert r.ok, [f"{f.rule}: {f.detail}" for f in r.findings
+                      if f.level == "ERROR"]
 
 
 def test_new_container_names_map_back_to_the_target():

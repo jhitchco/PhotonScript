@@ -524,6 +524,60 @@ def test_sim_night_0605_hands_over_at_moonrise(moon_rises_0417):
                if x["target"] == "Andromeda Galaxy") <= moonrise + 6
 
 
+class _PerFilter(_PerTarget):
+    """_PerTarget that also tags each light with the last SwitchFilter."""
+
+    def run_instruction(self, n):
+        if n.type == "SwitchFilter":
+            self.filt = (n.d.get("Filter") or {}).get("_name")
+        k = len(self.lights)
+        try:
+            return super().run_instruction(n)
+        finally:
+            for x in self.lights[k:]:
+                x["filter"] = getattr(self, "filt", None)
+
+    def filters_of(self, target):
+        out = {}
+        for x in self.lights:
+            if x["target"] == target and x["done"]:
+                out[x["filter"]] = out.get(x["filter"], 0) + 1
+        return out
+
+
+def _moon_wraps_repeat(seq):
+    """Before 2026-11-06: each "<filter> until moonrise" container had the
+    moonrise TimeCondition only, so it repeated its block until moonrise."""
+    out = copy.deepcopy(seq)
+    for d in _walk(out):
+        if str(d.get("Name", "")).endswith(nsj.FILTER_UNTIL_MOONRISE_SUFFIX):
+            d["Conditions"]["$values"] = [
+                c for c in d["Conditions"]["$values"]
+                if _short(c["$type"]) != "LoopCondition"]
+            d["Items"]["$values"].append(
+                nsj._wait_for_timespan(nsj.TARGET_IMAGING_PACE_S))
+    return out
+
+
+def test_sim_night_2026_11_05_old_wraps_shot_only_luminance(moon_rises_0417):
+    """Night 2026-11-05 (moonrise 04:13): NGC 604 48 L and the Heart 54 L,
+    no R, G or B. The old repeating wrap reproduces it on M31 LRGB."""
+    sim = _PerFilter(_moon_wraps_repeat(_night_0605()), tick=TICK,
+                     max_steps=3_000_000).run()
+    got = sim.filters_of("Andromeda Galaxy")
+    assert set(got) == {"L"}, got
+
+
+def test_sim_lrgb_cycles_every_filter_before_moonrise(moon_rises_0417):
+    sim = _PerFilter(_night_0605(), tick=TICK, max_steps=3_000_000).run()
+    assert sim.spins() == {}, sim.spins()
+    got = sim.filters_of("Andromeda Galaxy")
+    assert {"L", "R", "G", "B"} <= set(got), got
+    moonrise = 4 * 3600 + 17 * 60 + 24 * 3600 - DUSK_LOCAL
+    assert max(x["end"] for x in sim.lights
+               if x["target"] == "Andromeda Galaxy") <= moonrise + 6
+
+
 def test_night_0605_structure_and_lint(moon_rises_0417):
     seq = _night_0605()
     for name in ("Andromeda Galaxy", "Andromeda Galaxy" + nsj.TARGET_IMAGING_SUFFIX):
