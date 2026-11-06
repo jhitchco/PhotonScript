@@ -832,7 +832,8 @@ def guider_commission_plan_cmd(
 @app.command("reentry-gate")
 def reentry_gate_cmd(
     kind: str = typer.Argument("af", help="af | slew | center | piggy_af "
-                               "(PS-241 Piggy-600 AF back-off)"),
+                               "(PS-241 Piggy-600 AF back-off) | "
+                               "tracking_test (PS-127 once per night)"),
     label: str = typer.Option("", "--label", help="The target"),
     filter_name: str = typer.Option("", "--filter",
                                     help="af: the filter the AF would run in"),
@@ -842,6 +843,8 @@ def reentry_gate_cmd(
                                         "target Dec (J2000 deg)"),
     trigger: str = typer.Option("", "--trigger", help="piggy_af: the NINA AF "
                                 "trigger that fired (time | temp | hfr)"),
+    subs: int = typer.Option(0, "--subs", help="tracking_test: subs in the "
+                             "whole ladder"),
     from_nina: bool = typer.Option(False, "--from-nina",
                                    help="Called by NINA's ExternalScript item "
                                         "(deploy\\reentry-gate.cmd)"),
@@ -864,6 +867,8 @@ def reentry_gate_cmd(
         q["ra"], q["dec"] = f"{ra:.6f}", f"{dec:.6f}"
     if trigger:
         q["trigger"] = trigger
+    if subs:
+        q["subs"] = str(subs)
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/api/reentry/gate?" + urllib.parse.urlencode(q),

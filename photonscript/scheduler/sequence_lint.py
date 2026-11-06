@@ -201,7 +201,8 @@ def _check_reentry_gates(seq: dict, r: LintResult) -> None:
     it must be the FIRST item of a plain one-pass container (no conditions,
     no triggers) that holds the step it guards and nothing that shoots
     (no exposure, no filter switch, no guiding: a skip must never skip
-    lights). ErrorBehavior 1, Attempts 1."""
+    lights). ErrorBehavior 1, Attempts 1. PS-127: kind tracking_test is the
+    exception, first in a "Tracking test ..." DeepSkyObjectContainer."""
     import re
     from photonscript.scheduler.reentry import is_gate
     for d in _walk_dicts(seq):
@@ -220,6 +221,14 @@ def _check_reentry_gates(seq: dict, r: LintResult) -> None:
         if g.get("ErrorBehavior") != 1 or g.get("Attempts") != 1:
             r.error("reentry-gate", f"[{name}] gate needs ErrorBehavior 1 "
                     "(SkipInstructionSetOnError) and Attempts 1")
+        if kind == "tracking_test":
+            # PS-127: the once-per-night gate leads the whole spliced
+            # tracking-test container; a SKIP skips the test, by design.
+            if ("DeepSkyObjectContainer" not in str(d.get("$type", ""))
+                    or not str(name).startswith("Tracking test ")):
+                r.error("reentry-gate", f"[{name}] the tracking_test gate "
+                        "belongs first in a tracking-test container")
+            continue
         if _vals(d.get("Conditions")) or _vals(d.get("Triggers")):
             r.error("reentry-gate", f"[{name}] a gated container must not "
                     "loop or carry triggers")
@@ -1478,7 +1487,13 @@ def lint(seq: dict, guided: bool | None = None,
             # download parks and holds after it.
             followed = any(" unguided ladder" not in json.dumps(d)
                            for _p, d in targets)
-            after = ("Tonight's targets follow it; it runs once per night."
+            gated = any("reentry-gate" in str(it.get("Script", ""))
+                        and " tracking_test " in str(it.get("Script", ""))
+                        for it in _vals(tgt.get("Items")))
+            after = ("Tonight's targets follow it; its gate runs it again "
+                     "after a pause until tonight has the whole ladder."
+                     if followed and gated else
+                     "Tonight's targets follow it; it runs once per night."
                      if followed else
                      "After the ladder the scope parks and holds until "
                      "dawn; stop the sequence to image.")

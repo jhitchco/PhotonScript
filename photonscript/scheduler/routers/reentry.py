@@ -8,6 +8,8 @@ GET  /api/reentry           mode, limits and tonight's decisions
 
 PS-241: kind=piggy_af&trigger=time|temp|hfr is the Piggy-600 AF back-off
 gate (scheduler/piggy_af_backoff.py) on the same script and endpoint.
+PS-127: kind=tracking_test&label=&subs= is the sideloaded tracking test's
+once-per-night gate (scheduler/tracking_test.py run_gate).
 GET  /api/piggy-af/backoff  the back-off decision now and tonight's events
 """
 from __future__ import annotations
@@ -27,7 +29,13 @@ def _cfg():
 @router.post("/api/reentry/gate")
 async def api_reentry_gate(kind: str = "af", label: str = "",
                            filter: str = "", ra: Optional[float] = None,
-                           dec: Optional[float] = None, trigger: str = ""):
+                           dec: Optional[float] = None, trigger: str = "",
+                           subs: int = 0):
+    if kind == "tracking_test":
+        import asyncio
+        from photonscript.scheduler import tracking_test
+        return await asyncio.to_thread(tracking_test.run_gate, _cfg(), label,
+                                       subs)
     if kind == "piggy_af":
         from photonscript.scheduler import piggy_af_backoff
         return await piggy_af_backoff.run_gate(_cfg(), trigger or "time", label)

@@ -7,7 +7,11 @@ pure functions, plus two tiny ninaAPI calls:
 
   splice_tracking_test()  tracking-test DeepSkyObjectContainer in the
                           Targets area BEFORE the night loop (PS-127: runs
-                          once per night), then tonight's targets minus
+                          once per night; with the re-entry gate script,
+                          first in the night loop behind its
+                          tracking_test gate instead, so a pause before
+                          the ladder is done runs it again), then
+                          tonight's targets minus
                           `exclude` in tonight's own start / night loop /
                           shutdown; ids + Parent links rebuilt with
                           link_parents() (PS-77)
@@ -138,6 +142,12 @@ SPLICED_TT_NOTE = ("Sideloaded (PS-127): this test runs once, in the Targets "
                    "follow. An unsafe spell during the ladder ends the test "
                    "for tonight; after an unsafe pause the night loop never "
                    "runs it again.")
+# PS-127 (2026-11-06): the gated splice (the test first in the night loop).
+SPLICED_TT_GATED_NOTE = ("Sideloaded (PS-127): this test runs first in the "
+                         "night loop, then tonight's targets follow. Its gate "
+                         "skips it once tonight has the whole ladder (or it "
+                         "started twice); a pause before that runs it again "
+                         "on resume.")
 # PS-171: appended to the TPoint mapping run's annotation when spliced.
 SPLICED_TPM_NOTE = ("Sideloaded (PS-171): this run goes once, in the Targets "
                     "area before the night loop, then tonight's targets "
@@ -268,7 +278,8 @@ def _norm(s) -> str:
 
 
 def splice_tracking_test(night_seq: dict, tt_seq: dict, exclude=(),
-                         name: str | None = None) -> dict:
+                         name: str | None = None,
+                         gate_script: str | None = None) -> dict:
     """Tonight's sequence with the tracking test's DeepSkyObjectContainer as
     the first item of the Targets area, BEFORE LOOP_ALL_NIGHT, and tonight's
     targets not in `exclude` left in TARGETS_CONTAINER in tonight's order.
@@ -284,13 +295,26 @@ def splice_tracking_test(night_seq: dict, tt_seq: dict, exclude=(),
     its UNSAFE branch and resumes tonight's targets. Unsafe when the Targets
     area starts: the test is skipped.
 
+    2026-11-05 that missed the test: the roof closed during its opening AF,
+    the night loop resumed tonight's targets and the test never ran. With
+    `gate_script` (the re-entry gate .cmd, tracking_test.gate_script) the
+    test goes FIRST in TARGETS_CONTAINER instead, inside the night loop, so
+    every resume reaches it, and its first item is the tracking_test gate
+    (ErrorBehavior 1): SKIP once tonight's runs log holds the whole ladder
+    or the test started twice, so a pause after the ladder never reruns it
+    and a pause before it does. Without a script: the Targets area as above.
+
     Names in `exclude` match case- and whitespace-insensitively. Returns a
     new tree with fresh $id / Parent links; inputs are untouched. Raises
     SpliceError on an unexpected shape."""
     from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PARK_NOTE
+    if not gate_script:
+        return splice_test(night_seq, tt_seq, exclude, name,
+                           note=(TRACKING_TEST_PARK_NOTE, SPLICED_TT_NOTE),
+                           what="tracking-test")
     return splice_test(night_seq, tt_seq, exclude, name,
-                       note=(TRACKING_TEST_PARK_NOTE, SPLICED_TT_NOTE),
-                       what="tracking-test")
+                       note=(TRACKING_TEST_PARK_NOTE, SPLICED_TT_GATED_NOTE),
+                       what="tracking-test", gate_script=gate_script)
 
 
 def splice_optics_test(night_seq: dict, ot_seq: dict, exclude=(),
@@ -354,11 +378,13 @@ def calibration_slot(seq: dict) -> dict | None:
 
 def splice_test(night_seq: dict, test_seq: dict, exclude=(),
                 name: str | None = None, note: tuple | None = None,
-                what: str = "test") -> dict:
+                what: str = "test", gate_script: str | None = None) -> dict:
     """The splice behind splice_tracking_test / splice_optics_test: the one
     DeepSkyObjectContainer of `test_seq` goes first in tonight's Targets
     area, before LOOP_ALL_NIGHT; `note` = (standalone sentence, spliced
-    sentence) swapped in the test's annotation."""
+    sentence) swapped in the test's annotation. gate_script (PS-127, the
+    tracking test only): the test goes first in TARGETS_CONTAINER instead,
+    led by its once-per-night gate."""
     from photonscript.scheduler.nina_sequence_json import link_parents
     bad = set(non_parent_refs(night_seq)) | set(non_parent_refs(test_seq))
     if bad:
@@ -382,10 +408,51 @@ def splice_test(night_seq: dict, test_seq: dict, exclude=(),
     if loop_at is None:
         raise SpliceError(f"no {NIGHT_LOOP} in the Targets area of "
                           f"{night_seq.get('Name')!r}")
-    vals.insert(loop_at, _spliced_note(tests[0], note))
+    test = _spliced_note(tests[0], note)
+    if gate_script:
+        test["Items"]["$values"].insert(0, _tt_gate(test, gate_script))
+        tc["Items"]["$values"] = [test] + kept
+    else:
+        vals.insert(loop_at, test)
     if name:
         night["Name"] = name
     return link_parents(night)
+
+
+def planned_subs(test: dict) -> int:
+    """Lights in one pass of a test container: the LoopCondition iterations
+    of every SmartExposure in it (0 when there is none)."""
+    n = 0
+    for d in _walk(test):
+        if "SmartExposure" not in str(d.get("$type") or ""):
+            continue
+        for c in _items({"Items": d.get("Conditions")}):
+            if "LoopCondition" in str(c.get("$type") or ""):
+                n += int(c.get("Iterations") or 0)
+                break
+    return n
+
+
+def _walk(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk(v)
+
+
+def _tt_gate(test: dict, script: str) -> dict:
+    """PS-127: the tracking_test gate ExternalScript (ErrorBehavior 1, so a
+    SKIP skips the whole test container)."""
+    from photonscript.scheduler.nina_sequence_json import _external_script
+    from photonscript.scheduler.tracking_test import gate_args
+    from photonscript.scheduler.reentry import GATE_ERROR_BEHAVIOR
+    g = _external_script(script, gate_args(test.get("Name"),
+                                           planned_subs(test)))
+    g["ErrorBehavior"] = GATE_ERROR_BEHAVIOR
+    return g
 
 
 def _spliced_note(test: dict, note: tuple | None = None) -> dict:

@@ -690,3 +690,102 @@ def format_report(rep: dict) -> str:
     for d in r.get("detail", []):
         lines.append("  - " + d)
     return "\n".join(lines)
+
+
+# ------------------------------------------------- PS-127 once-per-night gate
+#
+# 2026-11-05: the spliced test sat in the Targets area, which NINA runs once.
+# The roof closed during its opening AF, the night loop resumed tonight's
+# targets at 23:07 and the test never ran (0 subs). Now the spliced test sits
+# first in TARGETS_CONTAINER (inside the night loop, so every resume reaches
+# it again) and starts with this gate: deploy\reentry-gate.cmd tracking_test
+# --label="Tracking test <field>" -> POST /api/reentry/gate. SKIP (exit 1,
+# SkipInstructionSetOnError on the test container) once tonight's runs log
+# holds the whole ladder, or once the test has started GATE_MAX_RUNS times;
+# else RUN (the whole ladder again: a partial one is redone). The service
+# down = exit 0 = RUN, like every re-entry gate.
+
+GATE_KIND = "tracking_test"
+GATE_EVENT = "tracking_test_gate"     # run event kind
+GATE_MAX_RUNS = 2                     # starts per night, then SKIP
+
+
+def gate_script(cfg) -> str | None:
+    """The re-entry gate script when it exists on this machine (the armer
+    builds the splice on the scope PC), else None: no gate, and the splice
+    keeps the test in the Targets area (runs once, never again)."""
+    path = str(getattr(cfg, "reentry_gate_script", "") or "").strip()
+    try:
+        return path if path and Path(path).is_file() else None
+    except OSError:
+        return None
+
+
+def gate_args(label: str, planned: int) -> str:
+    """Arguments after the script path (deploy/reentry-gate.cmd)."""
+    safe = "".join(ch for ch in str(label or "") if ch not in '"%^&|<>')
+    return f'{GATE_KIND} --label="{safe.strip()[:60]}" --subs={int(planned)}'
+
+
+def gate_decision(label: str, planned: int, records: list[dict],
+                  events: list[dict]) -> dict:
+    """SKIP when tonight's subs named `label` cover the ladder (`planned`
+    subs; 0 = unknown, never complete) or the test already started
+    GATE_MAX_RUNS times tonight; else RUN."""
+    from photonscript.shared.target_names import target_key
+    key = target_key(label)
+    n = sum(1 for r in records if target_key(r.get("target")) == key)
+    runs = sum(1 for e in events if e.get("value") == "run"
+               and target_key(e.get("label")) == key)
+    out = {"n_subs": n, "planned": int(planned or 0), "runs": runs}
+    if planned and n >= planned:
+        why = f"ladder complete ({n} of {planned} subs tonight)"
+        return {**out, "verdict": "SKIP", "why": why}
+    if runs >= GATE_MAX_RUNS:
+        why = (f"already started {runs} times tonight ({n} of "
+               f"{planned or '?'} subs); not again")
+        return {**out, "verdict": "SKIP", "why": why}
+    why = ("first run tonight" if not runs else
+           f"rerun after an interruption ({n} of {planned or '?'} subs)")
+    return {**out, "verdict": "RUN", "why": why}
+
+
+def gate_events(cfg, night: str) -> list[dict]:
+    from photonscript.shared.night_events import events_path
+    from photonscript.shared.phd2_store import read_jsonl
+    return [r for r in read_jsonl(events_path(cfg, night))
+            if r.get("kind") == GATE_EVENT]
+
+
+def run_gate(cfg, label: str, planned: int = 0,
+             now: datetime | None = None, records: list | None = None) -> dict:
+    """One gate call from NINA #1. Never raises (an error answers RUN)."""
+    from photonscript.shared.phd2_store import night_of
+    now = now or datetime.utcnow()
+    out = {"verdict": "RUN", "kind": GATE_KIND, "label": label, "why": ""}
+    night = None
+    try:
+        night = night_of(cfg, now)
+        if records is None:
+            from photonscript.scheduler.runs import _load_subs
+            records = _load_subs(cfg, default_night(cfg, now))
+        out.update(gate_decision(label, planned, records,
+                                 gate_events(cfg, night)))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("tracking-test gate failed: %s", e)
+        out.update(verdict="RUN", why=f"error: {e}")
+    try:
+        from photonscript.shared.night_events import events_path
+        from photonscript.shared.phd2_store import append_jsonl, iso_z
+        rec = {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+               "kind": GATE_EVENT, "value": out["verdict"].lower(),
+               "label": label, "detail": out["why"]}
+        for k in ("n_subs", "planned", "runs"):
+            if out.get(k) is not None:
+                rec[k] = out[k]
+        append_jsonl(events_path(cfg, night or night_of(cfg, now)), rec)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("tracking-test gate event not logged: %s", e)
+    logger.info("tracking-test gate %s: %s (%s)", label, out["verdict"],
+                out["why"])
+    return out

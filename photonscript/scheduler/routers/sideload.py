@@ -123,7 +123,13 @@ def build_rc16_from(night: dict, night_name: str, guided, dither,
         test = json.loads(generate_tracking_test_json(
             field["name"], field["ra_hours"], field["dec_degrees"],
             filters=fl, exposures=ex, repeats=rep))
-        splice, tag = sd.splice_tracking_test, "TT"
+        from photonscript.scheduler.tracking_test import gate_script
+        tt_gate = gate_script(_cfg())    # PS-127: rerun after a pause
+
+        def splice(n, t, ex, name=None):
+            return sd.splice_tracking_test(n, t, ex, name,
+                                           gate_script=tt_gate)
+        tag = "TT"
     tonight = sd.target_names(night)
     drop = {" ".join(x.split()).lower() for x in exclude}
     kept = [n for n in tonight if " ".join(n.split()).lower() not in drop]

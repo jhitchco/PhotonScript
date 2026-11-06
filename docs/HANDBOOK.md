@@ -396,6 +396,17 @@ armer is not involved and stays DISARMED.
   parks and resumes tonight's targets. Unsafe when the Targets area starts:
   the test is skipped; re-sideload another night. The standalone tracking-test
   download keeps its park-and-hold after the ladder.
+  2026-11-05 showed the cost: the roof closed during the test's opening AF
+  and the test never ran. So when the re-entry gate script exists (the
+  scope PC) the splice now puts the test FIRST in TARGETS_CONTAINER, inside
+  the night loop, led by a `reentry-gate.cmd tracking_test --label=
+  --subs=<ladder>` ExternalScript (ErrorBehavior 1). The service
+  (`tracking_test.run_gate`) answers SKIP once tonight's runs log holds the
+  whole ladder or the test already started twice, else RUN; the service down
+  answers RUN. So a pause after the ladder never reruns it, a pause before or
+  during it runs the whole ladder again on resume (at most two starts).
+  Decisions are run events kind `tracking_test_gate`. Without the script
+  (a dev box) the splice keeps the Targets-area placement above.
 
 ### Arm with a recipe (PS-181)
 
