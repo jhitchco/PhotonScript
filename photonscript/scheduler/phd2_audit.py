@@ -315,6 +315,23 @@ def _c_calibration_step(row, val, observed, config, ctx):
                     f"PS-93 rate rescaled from bin {cal_b:g} to bin {cur_b:g}")
     if rec is None and dist and rate:
         rec, src = _num(recommended_step_ms(dist, rate)), "stored calibration rate"
+    # 2026-11-07: a FAIL / poor calibration whose RA rate is faster than the
+    # mount can move a star (guide speed over the pixel scale, the equator's
+    # rate) measured nothing real: the 11-02 record's 73.4 px/s is about
+    # 27"/s at 0.5x sidereal. Judge the step the way PHD2's calculator
+    # does instead (7.52"/s / 0.744"/px = 10.1 px/s, 53 px / 12 steps =
+    # about 435 ms against the profile's 450). A failed record with a
+    # possible rate (10-02: too few steps at 19.5 px/s) still counts.
+    failed = str(cal.get("grade") or "").upper() == "FAIL" or bool(cal.get("poor"))
+    orate = _optics_rate_px_s(observed, config) if failed else None
+    if orate and dist and rate and rate > IMPOSSIBLE_RATE_X * orate:
+        src = (f"guide speed / pixel scale = {orate:.1f} px/s; the failed "
+               f"calibration's {rate:.1f} px/s is impossible")
+        rate = orate
+        rec = _num(recommended_step_ms(dist, rate))
+        failed = False
+    elif failed and not orate:
+        rate = None   # unverifiable: no too-few-steps FAIL from a failed record
     if rec is None:
         return UNKNOWN, "the PS-93 recommended step", None, \
             "no graded calibration with a recommended step yet"
@@ -334,10 +351,40 @@ def _c_calibration_step(row, val, observed, config, ctx):
     # for a plain miss (the 11-02 record, 78 deg from perpendicular at bin 1,
     # asked for 60 ms against PHD2's own 450 ms at bin 2): a WARN until
     # PS-93's next graded calibration measures the rate, never a blocker
-    if str(cal.get("grade") or "").upper() == "FAIL" or cal.get("poor"):
+    if failed:
         return WARN, (want + "; unverified: the stored calibration failed, PS-93's "
                       "next calibration measures the rate"), int(rec), None
     return row["severity"], want, int(rec), None
+
+
+# an RA rate this many times the equator's guide rate is a broken measurement
+IMPOSSIBLE_RATE_X = 1.5
+
+
+def _optics_rate_px_s(observed, config):
+    """The RA guide rate in px/s at the equator, as PHD2's calibration step
+    calculator works it out: the mount guide speed ("/s) over the guide
+    scale ("/px). The scale is PHD2's live one, else the camera's pixel
+    size x binning over the guide focal length. None when either is
+    unknown."""
+    from photonscript.shared import guide_motion as gm
+    api = observed.get("api") or {}
+    log = observed.get("log") or {}
+    scale = _num(api.get("pixel_scale") or log.get("pixel_scale"))
+    if not scale:
+        from photonscript.telescope_agent.phd2_client import guide_focal_length_mm
+        cam = (observed.get("_camera") or {}).get("camera") or {}
+        px = _num(cam.get("pixel_size_um"))
+        fl = guide_focal_length_mm(config)
+        b = _num(api.get("binning") or log.get("binning")) or _num(cam.get("binning")) or 1
+        scale = 206.265 * px * int(b) / fl if px and fl else None
+    sp = (observed.get("nina") or {}).get("guide_speed") or {}
+    speed = _num(sp.get("ra")) if sp.get("source") == "nina" and not sp.get("zero") else None
+    if speed is None:
+        speed = float(getattr(config, "guide_rate_sidereal", 0.5) or 0.5) * gm.SIDEREAL_ARCSEC_S
+    if not scale or scale <= 0 or not speed or speed <= 0:
+        return None
+    return speed / scale
 
 
 def _c_calibration_record(row, val, observed, config, ctx):

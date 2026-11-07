@@ -157,6 +157,47 @@ def test_calibration_step_from_a_failed_calibration_is_only_a_warn():
     assert "stored calibration failed" in cs["desired"]
 
 
+_FAILED_1102 = {"grade": "FAIL", "poor": True, "recommended_step_ms": 60,
+                "ra_rate_px_s": 73.378, "distance_px": 53, "binning": 1.0}
+
+
+@pytest.mark.parametrize("nina", [
+    {"guide_speed": {"ra": 7.52, "source": "nina"}},     # mount via NINA
+    {},                                                   # config 0.5 x sidereal
+])
+def test_failed_calibration_falls_back_to_phd2s_calculator(nina):
+    """2026-11-07 (ticket 411f4254): the failed 11-02 record's rate is not
+    evidence. PHD2's calculator: 7.52"/s over 0.744"/px is 10.1 px/s, so
+    53 px in 12 steps is about 435 ms, and the profile's 450 ms passes."""
+    rows, _ = _eval({"log": {"calibration_step_ms": 450, "binning": 2},
+                     "api": {"pixel_scale": 0.744, "binning": 2},
+                     "profile": {"binning": 2, "calibration_distance_px": 53},
+                     "nina": nina, "calibration": dict(_FAILED_1102)})
+    cs = rows["calibration_step_ms"]
+    assert cs["status"] == pa.PASS, cs
+    assert 420 <= cs["target"] <= 450
+    assert "guide speed / pixel scale" in cs["desired"]
+    # a genuinely wrong step still misses against the calculator
+    bad, _ = _eval({"log": {"calibration_step_ms": 60, "binning": 2},
+                    "api": {"pixel_scale": 0.744, "binning": 2},
+                    "profile": {"binning": 2, "calibration_distance_px": 53},
+                    "nina": nina, "calibration": dict(_FAILED_1102)})
+    assert bad["calibration_step_ms"]["status"] != pa.PASS
+
+
+def test_failed_calibration_rate_never_makes_a_too_few_steps_fail(monkeypatch):
+    """Without a scale to check it against, the failed record's rate must
+    not reach the PS-119 too-few-steps FAIL (a 2000 ms step at its
+    36.7 px/s would be under 1 step)."""
+    monkeypatch.setattr(pa, "_optics_rate_px_s", lambda observed, config: None)
+    rows, _ = _eval({"log": {"calibration_step_ms": 2000, "binning": 2},
+                     "profile": {"binning": 2, "calibration_distance_px": 53},
+                     "calibration": dict(_FAILED_1102)})
+    cs = rows["calibration_step_ms"]
+    assert cs["status"] == pa.WARN, cs
+    assert "stored calibration failed" in cs["desired"]
+
+
 @pytest.mark.parametrize("owner,algo,status", [
     ("protrack", "Hysteresis", pa.PASS), ("protrack", "Predictive PEC", pa.FAIL),
     ("phd2_ppec", "Predictive PEC", pa.PASS), ("phd2_ppec", "Lowpass2", pa.FAIL),
