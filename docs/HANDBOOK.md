@@ -70,7 +70,9 @@ other sessions leave unfinished work in this checkout; `-IncludeWorkingTree
 pulls --rebase, runs the test gate on exactly what ships, shows
 `origin/main..HEAD`, pushes, POSTs `/api/update` on the scope, which stops
 gracefully (exit 42), and waits for `GET /api/health` to report the pushed SHA.
-Refused with 409 while RUNNING, PAUSED_UNSAFE or WATCHING, while a grading job writes,
+Refused with 409 while RUNNING or WATCHING, while PAUSED_UNSAFE unless
+`-AllowPaused` with the roof closed (safety monitor unsafe) and the mount
+parked (2026-11-08), while a grading job writes,
 while ARMED unless `-AllowArmed` (the armed night is restored), and while
 PAUSED_OPERATOR (PS-64) unless `-AllowPaused` (2026-10-14): then only with the
 pause settled ("paused", no Resume / Restart in flight), NINA #1 and #2 idle

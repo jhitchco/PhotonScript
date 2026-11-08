@@ -174,7 +174,7 @@ async def test_paused_settled_and_idle_restarts(api, env):
     assert saved["pause"]["update_restart"]["night_of"] == a.plan["night_of"]
 
 
-@pytest.mark.parametrize("state", ["RUNNING", "PAUSED_UNSAFE", "WATCHING"])
+@pytest.mark.parametrize("state", ["RUNNING", "WATCHING"])   # PAUSED_UNSAFE: test_update_unsafe
 async def test_never_mid_night_states(api, env, state):
     a = _paused(env)
     a.state = state

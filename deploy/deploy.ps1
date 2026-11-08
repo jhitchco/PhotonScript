@@ -5,7 +5,7 @@
 #                                                    # tree (shows it, asks first)
 #   .\deploy\deploy.ps1 -SkipTests                   # emergency bypass of the gate
 #   .\deploy\deploy.ps1 -AllowArmed                  # restart while ARMED
-#   .\deploy\deploy.ps1 -AllowPaused                 # restart while PAUSED_OPERATOR
+#   .\deploy\deploy.ps1 -AllowPaused                 # restart while PAUSED_OPERATOR, or PAUSED_UNSAFE with the roof closed
 #
 # Why: this checkout also holds other sessions' unfinished work. The old
 # `git add -A` swept 24 files / ~1,700 lines of it into one deploy (6ec7149,
@@ -23,6 +23,8 @@
 # while PAUSED_OPERATOR (-AllowPaused overrides, only with the pause settled
 # and NINA #1 and #2 idle: the paused night comes back PAUSED with no device
 # command, no park / warm / connect / load) and while a grading job is writing.
+# -AllowPaused also covers PAUSED_UNSAFE (2026-11-08), only while the safety
+# monitor reads unsafe (roof closed) and NINA reads the mount parked.
 
 param(
     [string]$Message = "",
@@ -154,7 +156,7 @@ try {
         $detail = ""
         try { $detail = ($_.ErrorDetails.Message | ConvertFrom-Json).detail } catch {}
         Write-Warning "Pushed, but the scope REFUSED to restart: $detail"
-        Write-Warning "It will pick the code up on the next restart - or rerun deploy when that clears (-AllowArmed if it is only ARMED, -AllowPaused if it is PAUSED_OPERATOR)."
+        Write-Warning "It will pick the code up on the next restart - or rerun deploy when that clears (-AllowArmed if it is only ARMED, -AllowPaused if it is PAUSED_OPERATOR, or PAUSED_UNSAFE with the roof closed and the mount parked)."
     } else {
         Write-Warning "Could not reach the scope PC at $Scope - update it manually."
     }

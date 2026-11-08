@@ -4194,6 +4194,48 @@ class Armer:
                           "paused: the pause is restored after it", now)
         return rec
 
+    # -- 2026-11-08: code update while PAUSED_UNSAFE with the roof closed ------
+    # The 11-08 deploy (38cb967) was refused at 01:52Z: clouds, roof shut,
+    # RC16 parked, nothing could image for hours. allow_paused now also
+    # covers PAUSED_UNSAFE, but only when the safety monitor itself reads
+    # unsafe (the roof is closed) and NINA reads the mount parked. restore()
+    # reattaches PAUSED_UNSAFE as after any mid-night restart (connect-only;
+    # the safety monitor still gates the resume).
+
+    async def update_unsafe_blockers(self) -> list[str]:
+        """Why a PAUSED_UNSAFE night may not restart for an update now.
+        Empty = go. Read only; fails closed (anything unreadable blocks)."""
+        if self.state != "PAUSED_UNSAFE":
+            return [f"armer is {self.state}, not PAUSED_UNSAFE"]
+        why = []
+        cal = self._calibration_busy()
+        if cal:
+            why.append(f"a calibration capture job runs on {cal}")
+        data = await self._nina("safety")
+        s = data.get("Response", data) if isinstance(data, dict) else None
+        if not isinstance(s, dict) or s.get("Connected") is not True:
+            why.append("the safety monitor is unreadable or disconnected "
+                       "(cannot confirm the roof is closed)")
+        elif s.get("IsSafe") is not False:
+            why.append("the safety monitor reads safe: the roof may be open "
+                       "or opening")
+        data = await self._nina("mount_info")
+        m = data.get("Response", data) if isinstance(data, dict) else None
+        if not isinstance(m, dict) or m.get("Connected") is not True:
+            why.append("NINA #1 mount unreadable or disconnected (cannot "
+                       "confirm it is parked)")
+        elif m.get("AtPark") is not True:
+            why.append("the mount is not parked yet")
+        return why
+
+    def prepare_unsafe_update_restart(self, now: datetime | None = None) -> dict:
+        """Hand self-update its one-shot allowance for this PAUSED_UNSAFE
+        night. Sends nothing to any device; the state stays PAUSED_UNSAFE."""
+        now = now or datetime.utcnow()
+        from photonscript.shared.updater import write_paused_allowance
+        return write_paused_allowance(self.config, self.plan.get("night_of"),
+                                      None, state="PAUSED_UNSAFE")
+
     async def restart(self, when: str = "after_exposure",
                       now: datetime | None = None) -> dict:
         """Restart tonight from now. RUNNING: stop NINA #1 after the current

@@ -121,7 +121,18 @@ Allowed only when ALL hold, else 409 with the reason:
   sequence; an unreadable NINA blocks, and a pause that KEPT the Piggy-600
   imaging blocks (pause it too, or wait);
 - no calibration capture job and no grading job is writing.
-RUNNING, PAUSED_UNSAFE and WATCHING are always refused.
+RUNNING and WATCHING are always refused.
+
+**PAUSED_UNSAFE with the roof closed (2026-11-08).** `-AllowPaused` also
+restarts a PAUSED_UNSAFE night, only when NINA #1 reads the safety monitor
+connected and UNSAFE (the roof is closed) and the mount connected and
+parked, with no calibration capture job running; anything unreadable blocks.
+The allowance carries `state: PAUSED_UNSAFE` and the night; self-update
+defers if the armer has left PAUSED_UNSAFE by then (e.g. the roof reopened).
+The night reattaches as after any mid-night restart (connect-only, the
+unguided guard re-checks; the safety monitor still gates the resume).
+Made for 2026-11-08: 38cb967 refused at 01:52Z with clouds, roof shut and
+the RC16 parked for hours.
 
 What happens: the armer marks the pause (`pause.update_restart`) and writes a
 one-shot allowance `<data_dir>\update_allow_paused.json` (night + pause

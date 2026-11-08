@@ -3323,9 +3323,15 @@ def _update_blockers(allow_armed: bool, allow_paused: bool = False) -> list[str]
     asks the armer (update_paused_blockers: settled pause, NINAs idle)."""
     why = []
     st_name = str(get_armer().state or "").upper()
-    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING"):  # PS-136
+    if st_name in ("RUNNING", "WATCHING"):  # PS-136
         why.append(f"armer is {st_name}: refusing to restart mid-night. "
                    "Stop the run first.")
+    elif st_name == "PAUSED_UNSAFE" and not allow_paused:  # 2026-11-08
+        why.append("armer is PAUSED_UNSAFE: refusing to restart mid-night. "
+                   "Stop the run first, or pass allow_paused=true (only with "
+                   "the safety monitor reading unsafe, so the roof is closed, "
+                   "and the mount parked; the night reattaches after the "
+                   "restart)")
     elif st_name == "PAUSED_OPERATOR" and not allow_paused:  # PS-64
         why.append("armer is PAUSED_OPERATOR: refusing to restart mid-night. "
                    "Stop the run first, or pass allow_paused=true (the paused "
@@ -3360,13 +3366,24 @@ async def api_update(allow_armed: bool = False, allow_paused: bool = False):
     why = _update_blockers(allow_armed, allow_paused)
     armer = get_armer()
     paused = str(armer.state or "").upper() == "PAUSED_OPERATOR"
+    unsafe = str(armer.state or "").upper() == "PAUSED_UNSAFE"
     if not why and paused:
         why = await armer.update_paused_blockers()
         if why:
             why = ["armer is PAUSED_OPERATOR but not ready for a restart:"] + [
                 "; ".join(why) + "."]
+    elif not why and unsafe:
+        why = await armer.update_unsafe_blockers()
+        if why:
+            why = ["armer is PAUSED_UNSAFE but not ready for a restart:"] + [
+                "; ".join(why) + "."]
     if why:
         return JSONResponse(status_code=409, content={"detail": " ".join(why)})
+    if unsafe:
+        armer.prepare_unsafe_update_restart()
+        logger.warning("Update while PAUSED_UNSAFE (allow_paused): roof "
+                       "closed and mount parked; the night reattaches after "
+                       "the restart")
     if paused:
         # one-shot allowance for self-update + the mark restore() closes
         armer.prepare_update_restart()

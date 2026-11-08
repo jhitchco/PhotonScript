@@ -84,6 +84,9 @@ _NIGHT_RUNNING = ("RUNNING", "PAUSED_UNSAFE", "WATCHING",  # PS-136 watched
 PAUSED_ALLOW_NAME = "update_allow_paused.json"
 PAUSED_ALLOW_TTL_S = 600
 PAUSED_STATE = "PAUSED_OPERATOR"
+# 2026-11-08: the same allowance for PAUSED_UNSAFE, written only once the
+# safety monitor read unsafe (roof closed) and NINA read the mount parked
+UNSAFE_STATE = "PAUSED_UNSAFE"
 
 
 def _now() -> str:
@@ -185,10 +188,13 @@ def night_active(config) -> Optional[str]:
     return state
 
 
-def write_paused_allowance(config, night_of, pause_since) -> dict:
+def write_paused_allowance(config, night_of, pause_since,
+                           state: str = PAUSED_STATE) -> dict:
     """The /api/update side: allow the next self-update while this exact
-    pause (night_of + pause since) is still the armer's state."""
-    rec = {"night_of": night_of, "pause_since": pause_since, "at": _now()}
+    pause (night_of + pause since) is still the armer's state, or (state
+    PAUSED_UNSAFE) while this night is still paused unsafe."""
+    rec = {"night_of": night_of, "pause_since": pause_since, "at": _now(),
+           "state": state}
     p = Path(config.data_dir) / PAUSED_ALLOW_NAME
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + ".tmp")
@@ -228,10 +234,15 @@ def consume_paused_allowance(config, now: Optional[datetime] = None) -> Optional
     except (OSError, ValueError):
         return "armer state unreadable"
     pause = saved.get("pause") if isinstance(saved.get("pause"), dict) else {}
-    if str(saved.get("state") or "") != PAUSED_STATE:
-        return f"armer is {saved.get('state')}, not {PAUSED_STATE}"
+    want = rec.get("state") or PAUSED_STATE
+    if want not in (PAUSED_STATE, UNSAFE_STATE):
+        return f"allowance for an unknown state {want}"
+    if str(saved.get("state") or "") != want:
+        return f"armer is {saved.get('state')}, not {want}"
     if (saved.get("plan") or {}).get("night_of") != rec.get("night_of"):
         return "allowance is for another night"
+    if want == UNSAFE_STATE:
+        return None
     if pause.get("since") != rec.get("pause_since"):
         return "allowance is for another pause"
     if pause.get("phase") != "paused":
@@ -411,14 +422,14 @@ def self_update(config, repo: Path, *, python: str = sys.executable,
         return refuse(f"{target[:7]} was rolled back earlier (bad start); "
                       "push a fix to deploy again", target, alert=False)
     active = night_active(config)
-    if active == PAUSED_STATE and paused_no is None:
+    if active in (PAUSED_STATE, UNSAFE_STATE) and paused_no is None:
         # 2026-10-14: POST /api/update?allow_paused=true checked the pause
         # (settled, NINA #1 and #2 idle); the armer restores it as is
         logger.info("Update to %s while %s: allowed by allow_paused (the "
                     "paused night is restored after the restart)",
                     target[:7], active)
     elif active:
-        if active == PAUSED_STATE and paused_no != "no allowance":
+        if active in (PAUSED_STATE, UNSAFE_STATE) and paused_no != "no allowance":
             logger.info("allow_paused not used: %s", paused_no)
         logger.info("Update to %s deferred: armer is %s", target[:7], active)
         return DEFERRED, f"night active ({active}); update deferred"
