@@ -9,6 +9,7 @@
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
     <script src="/static/js/sky_geom.js?v={{ version }}"></script>
+    <script src="/static/js/alt_chart.js?v={{ version }}"></script>
     <script src="/static/js/review.js?v={{ version }}"></script>
     <script src="/static/js/integrations.js?v={{ version }}"></script>
     <script src="/static/js/readiness.js?v={{ version }}"></script>
@@ -103,6 +104,14 @@
                             <span class="dim" id="linkMsg"></span>
                         </div>
                     </details>
+                </div>
+                <div id="altPanel" hidden>
+                    <h2 style="margin-top:1rem;">In the sky tonight</h2>
+                    <div id="tAltLine" class="muted" style="margin-bottom:.35rem;"></div>
+                    <div id="tAlt"></div>
+                    <div class="dim" style="font-size:.66rem;margin-top:.2rem;">noon &rarr; noon (local)
+                        &middot; shaded = astro dark &middot; dashed = 30&deg; &middot; dot = now
+                        &middot; &#8644; = meridian flip</div>
                 </div>
                 <h2 style="margin-top:1rem;">Goal</h2>
                 <div id="tGoal" class="muted">loading&hellip;</div>
@@ -710,6 +719,34 @@ document.querySelectorAll('#viewChips .chip').forEach(c => c.onclick = () => {
     view = c.dataset.v; loadRef();
 });
 
+// 2026-11-08: where the target is in the sky (altitude now and tonight),
+// from /api/target/altitude; the chart is static/js/alt_chart.js. Redrawn
+// every 5 min so the "now" marker moves.
+let altTimer = null;
+async function loadAlt() {
+    const f = D && D.facts;
+    if (!f || f.ra_hours == null || f.dec_degrees == null || !window.AltChart) return;
+    let d;
+    try {
+        d = await (await fetch('/api/target/altitude?name=' + encodeURIComponent(D.target) +
+            '&ra_hours=' + f.ra_hours + '&dec_degrees=' + f.dec_degrees)).json();
+    } catch (e) { return; }
+    if (!d || !d.alts) return;
+    const s = AltChart.summary(d);
+    const parts = [];
+    if (s.now_alt != null)
+        parts.push('<b>' + (s.now_alt > 0 ? 'now ' + s.now_alt + '° up'
+                                          : 'below the horizon now') + '</b>');
+    parts.push('transit ' + s.transit_local + ' at ' + s.transit_alt + '°');
+    if (s.never_up) parts.push('never above 30° tonight');
+    else if (s.always_up) parts.push('above 30° all night');
+    else parts.push('above 30° ' + (s.up_from || 'until') + ' – ' + (s.up_to || 'dawn'));
+    document.getElementById('tAltLine').innerHTML = parts.join(' · ');
+    document.getElementById('tAlt').innerHTML = altChartSVG(d, {fluid: true, nowDot: true});
+    document.getElementById('altPanel').hidden = false;
+    if (!altTimer) altTimer = setInterval(() => { if (!document.hidden) loadAlt(); }, 300000);
+}
+
 fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     D = await r.json();
     document.title = 'PhotonScript - ' + (D.unattributed ? 'Unattributed' : D.target);
@@ -723,7 +760,7 @@ fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     if (D.project_id) loadBlend();
     if (!D.unattributed) loadBudget(); else document.getElementById('tBudget').textContent = 'n/a';
     if (D.project_id) { loadQa(); loadCampaign(); }
-    if (!D.unattributed) { loadRef(); pollLive(); }
+    if (!D.unattributed) { loadRef(); pollLive(); loadAlt(); }
     else document.getElementById('refPanel').hidden = true;
 }).catch(() => document.getElementById('tName').textContent = 'unavailable');
 </script>

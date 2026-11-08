@@ -2046,17 +2046,21 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
     now = datetime.utcnow()
     off = _tz_off(config, now)
 
-    cache_key = (round(ra_hours, 3), round(dec_degrees, 3),
-                 (now + timedelta(hours=off)).strftime("%Y-%m-%d"))
-    if cache_key in _alt_cache:
-        cached = dict(_alt_cache[cache_key])
-        return cached
-
     # local noon (UTC) today
     noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
         - timedelta(hours=off) + timedelta(hours=12)
     if noon_utc > now:
         noon_utc -= timedelta(days=1)
+
+    # keyed on the axis start (noon to noon), not the local calendar date:
+    # after midnight the same night keeps its curve. 2026-11-08: "now" is
+    # recomputed on a hit (the Targets page redraws its marker every 5 min).
+    cache_key = (round(ra_hours, 3), round(dec_degrees, 3),
+                 noon_utc.strftime("%Y-%m-%dT%H"))
+    if cache_key in _alt_cache:
+        cached = dict(_alt_cache[cache_key])
+        cached["now_frac"] = max(0.0, min(1.0, (now - noon_utc).total_seconds() / 86400))
+        return cached
 
     times = Time(noon_utc) + np.arange(0, 24.01, 0.25) * u.hour
     frame = AltAz(obstime=times, location=get_earth_location(obs))
