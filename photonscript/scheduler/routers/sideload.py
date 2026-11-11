@@ -118,11 +118,44 @@ def build_rc16_from(night: dict, night_name: str, guided, dither,
                                                star_item=gc["star_item"])
         tag = "GC"
     else:
-        fl, ex, rep = app._tracking_test_params("L,Ha", "60,120,180,300", 2)
-        field = app._tracking_test_field("", None, None, fl, ex, rep, at)
-        test = json.loads(generate_tracking_test_json(
-            field["name"], field["ra_hours"], field["dec_degrees"],
-            filters=fl, exposures=ex, repeats=rep))
+        fl, ex, rep = app._tracking_test_params(
+            ",".join(str(x) for x in (opts.get("filters") or ["L", "Ha"])),
+            ",".join(str(x) for x in (opts.get("exposures")
+                                       or [60, 120, 180, 300])),
+            int(opts.get("repeats") or 2))
+        if opts.get("fields"):   # 2026-11-11: drift ladder at several spots
+            from photonscript.scheduler import tracking_test as tt
+            from photonscript.scheduler.nina_sequence_json import (
+                _tracking_test_exposures, _tracking_test_filters,
+                tracking_test_duration_s)
+            dur = tracking_test_duration_s(
+                len(_tracking_test_filters(fl)) or 1,
+                _tracking_test_exposures(ex), rep)
+            start = None
+            if at:
+                try:
+                    start = datetime.fromisoformat(at.replace("Z", ""))
+                except ValueError:
+                    start = None
+            spots = tt.place_fields(_cfg(), opts["fields"], start, dur,
+                                    _active_projects())
+            field = {**spots[0],
+                     "name": " + ".join(s["name"] for s in spots),
+                     "fields": spots,
+                     "est_minutes": sum(s["est_minutes"] for s in spots),
+                     "summary": "; ".join(
+                         f"{s['name']} RA {s['ra_hours']:.2f}h Dec "
+                         f"{s['dec_degrees']:+.0f} alt {s['alt_start_deg']:.0f}"
+                         f"->{s['alt_end_deg']:.0f} HA {s['ha_start_h']:+.1f}"
+                         f"->{s['ha_end_h']:+.1f}" for s in spots),
+                     "for_utc": spots[0]["start_utc"]}
+            test = json.loads(generate_tracking_test_json(
+                filters=fl, exposures=ex, repeats=rep, fields=spots))
+        else:
+            field = app._tracking_test_field("", None, None, fl, ex, rep, at)
+            test = json.loads(generate_tracking_test_json(
+                field["name"], field["ra_hours"], field["dec_degrees"],
+                filters=fl, exposures=ex, repeats=rep))
         from photonscript.scheduler.tracking_test import gate_script
         tt_gate = gate_script(_cfg())    # PS-127: rerun after a pause
 

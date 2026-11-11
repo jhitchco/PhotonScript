@@ -82,6 +82,65 @@ RECIPE_LABELS = {
 ADD_MODES = ("off", "auto")   # tpoint_sample.ADD_MODES
 
 
+TT_OPTS = ("exposures", "filters", "repeats", "fields")
+
+
+def _csv(v) -> list:
+    if isinstance(v, str):
+        return [x.strip() for x in v.split(",") if x.strip()]
+    return list(v) if isinstance(v, (list, tuple)) else [v]
+
+
+def tracking_test_opts(opts: dict) -> tuple[dict | None, str | None]:
+    """2026-11-11 drift ladder: the tracking-test recipe's options.
+    exposures (s, 1..3600), filters (names), repeats (1..10), fields (list of
+    {"label", "ha", "dec"} or {"label", "ra", "dec"}, at most 6; see
+    tracking_test.place_fields). Unknown keys are an error."""
+    from photonscript.scheduler.tracking_test import MAX_FIELDS
+    bad = sorted(set(opts) - set(TT_OPTS))
+    if bad:
+        return None, (f"recipe_opts {bad} not allowed for {RECIPE_TT_THEN_TONIGHT}"
+                      f" (allowed: {', '.join(TT_OPTS)})")
+    out: dict = {}
+    try:
+        if "exposures" in opts:
+            ex = sorted({float(x) for x in _csv(opts["exposures"])})
+            if not ex or ex[0] <= 0 or ex[-1] > 3600:
+                return None, "exposures must be 1 to 3600 s"
+            out["exposures"] = ex
+        if "filters" in opts:
+            out["filters"] = [str(x) for x in _csv(opts["filters"])]
+        if "repeats" in opts:
+            out["repeats"] = max(1, min(int(opts["repeats"]), 10))
+        if "fields" in opts:
+            fl = opts["fields"]
+            if not isinstance(fl, list) or not fl or len(fl) > MAX_FIELDS:
+                return None, f"fields must be a list of 1 to {MAX_FIELDS} objects"
+            clean = []
+            for i, f in enumerate(fl):
+                if not isinstance(f, dict):
+                    return None, "each field must be an object"
+                c = {"label": str(f.get("label") or f"F{i + 1}")[:24]}
+                for k in ("ha", "ra", "dec"):
+                    if f.get(k) is not None:
+                        c[k] = float(f[k])
+                if "ha" not in c and not ("ra" in c and "dec" in c):
+                    return None, "each field needs ha, or ra and dec"
+                clean.append(c)
+            out["fields"] = clean
+    except (TypeError, ValueError) as e:
+        return None, f"bad tracking-test option: {e}"
+    label = RECIPE_LABELS[RECIPE_TT_THEN_TONIGHT]
+    bits = []
+    if out.get("exposures"):
+        bits.append(f"{out['exposures'][0]:g} to {out['exposures'][-1]:g} s")
+    if out.get("fields"):
+        bits.append(f"{len(out['fields'])} fields")
+    if bits:
+        label += f" ({', '.join(bits)})"
+    return {"id": RECIPE_TT_THEN_TONIGHT, "label": label, "opts": out}, None
+
+
 def arm_recipe(recipe, opts=None) -> tuple[dict | None, str | None]:
     """PS-181: validate an arm's recipe. (None, None) for no recipe,
     ({"id", "label", "opts"}, None) when valid, (None, error) otherwise.
@@ -107,6 +166,8 @@ def arm_recipe(recipe, opts=None) -> tuple[dict | None, str | None]:
                                       if gopts.get("skip") else "")
         return {"id": rid, "label": label, "opts": gopts}, None
     opts = {k: v for k, v in (opts or {}).items() if v not in (None, "")}
+    if rid == RECIPE_TT_THEN_TONIGHT and opts:
+        return tracking_test_opts(opts)
     allowed = ("points", "add") if rid == RECIPE_TPOINT_MAPPING else ()
     bad = sorted(set(opts) - set(allowed))
     if bad:
@@ -392,7 +453,12 @@ def splice_test(night_seq: dict, test_seq: dict, exclude=(),
                           "the splice would leave it dangling")
     night, tt = strip_ids(night_seq), strip_ids(test_seq)
     tests = [v for v in _items(_targets_container(tt)) if _is_dso(v)]
-    if len(tests) != 1:
+    # 2026-11-11: the tracking test may carry several fields (drift ladder
+    # at several sky positions), each its own container and its own gate
+    from photonscript.scheduler.tracking_test import is_tracking_test
+    multi = what == "tracking-test" and all(
+        is_tracking_test(t.get("Name")) for t in tests)
+    if not tests or (len(tests) != 1 and not multi):
         raise SpliceError(f"{what} sequence has {len(tests)} targets, "
                           "want exactly 1")
     drop = {_norm(x) for x in (exclude or ()) if str(x or "").strip()}
@@ -408,12 +474,13 @@ def splice_test(night_seq: dict, test_seq: dict, exclude=(),
     if loop_at is None:
         raise SpliceError(f"no {NIGHT_LOOP} in the Targets area of "
                           f"{night_seq.get('Name')!r}")
-    test = _spliced_note(tests[0], note)
+    spliced = [_spliced_note(t, note) for t in tests]
     if gate_script:
-        test["Items"]["$values"].insert(0, _tt_gate(test, gate_script))
-        tc["Items"]["$values"] = [test] + kept
+        for test in spliced:
+            test["Items"]["$values"].insert(0, _tt_gate(test, gate_script))
+        tc["Items"]["$values"] = spliced + kept
     else:
-        vals.insert(loop_at, test)
+        vals[loop_at:loop_at] = spliced
     if name:
         night["Name"] = name
     return link_parents(night)

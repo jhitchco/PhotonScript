@@ -2174,16 +2174,22 @@ def generate_tracking_test_json(name: str = "Heart Nebula",
                                 filters: list[str] | None = None,
                                 exposures: list[float] | None = None,
                                 repeats: int = TRACKING_TEST_REPEATS,
-                                min_altitude: float = 30.0) -> str:
+                                min_altitude: float = 30.0,
+                                fields: list[dict] | None = None) -> str:
     """PS-84: a whole-night NINA sequence (same startup, safety loop and
     shutdown as a normal night) whose only target is an unguided tracking
     test on one field. Generated only: nothing is sent to NINA. Load it by
-    hand in NINA #1 after the TPoint model is built and ProTrack is on."""
+    hand in NINA #1 after the TPoint model is built and ProTrack is on.
+
+    fields (2026-11-11 drift ladder): [{"name", "ra_hours", "dec_degrees"}]
+    gives one tracking-test target per field, run in order, each with the
+    same ladder; name/ra_hours/dec_degrees are then ignored."""
     from photonscript.scheduler.nina_sequence import build_sequence_for_night
     cfg = _gen_cfg()
-    tname = tracking_test_name(name)
-    t = NinaSequenceTarget(
-        name=tname, ra_hours=ra_hours, dec_degrees=dec_degrees,
+    spots = ([(f["name"], float(f["ra_hours"]), float(f["dec_degrees"]))
+              for f in fields] if fields else [(name, ra_hours, dec_degrees)])
+    targets = [NinaSequenceTarget(
+        name=tracking_test_name(n), ra_hours=ra, dec_degrees=dec,
         start_guiding=False, dither_every_n=0,
         camera_temp_c=float(getattr(cfg, "camera_setpoint_c", 0.0)),
         tracking_test=True,
@@ -2191,7 +2197,9 @@ def generate_tracking_test_json(name: str = "Heart Nebula",
         tracking_test_exposures=(_tracking_test_exposures(exposures)
                                  if exposures else []),
         tracking_test_repeats=max(1, int(repeats or 1)))
-    seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
+        for n, ra, dec in spots]
+    seq = build_sequence_for_night(targets[0].name, targets,
+                                   min_altitude=min_altitude)
     return generate_nina_json(seq)
 
 

@@ -175,6 +175,87 @@ def pick_target(config, when_utc: datetime | None = None,
                     "for the whole test at this time; using the Heart Nebula")
 
 
+FIELD_HA_TOL_H = 0.75      # a catalog field within this of the asked hour angle
+FIELD_ALT_MIN = 35.0       # every field stays above this for its whole ladder
+MAX_FIELDS = 6
+
+
+def place_fields(config, specs: list[dict], start_utc: datetime | None,
+                 duration_s: float,
+                 projects: Iterable[Any] | None = None) -> list[dict]:
+    """2026-11-11 drift ladder: several tracking-test fields run back to back
+    from `start_utc`, each `duration_s` long, each at a chosen spot in the sky.
+
+    A spec is {"label", "ra", "dec"} (fixed coordinates) or {"label", "ha"
+    (hours at mid-ladder, - = east), "dec" (optional, the wanted declination)}.
+    For an "ha" spec the field is the catalog / project object whose hour
+    angle at mid-ladder is within FIELD_HA_TOL_H of it, never crosses the
+    meridian during the ladder and stays above FIELD_ALT_MIN, closest in hour
+    angle then declination (galaxies penalised: few stars); none = a plain
+    star field at RA = LST(mid) - ha at the spec's declination (default +30).
+    Returns one dict per spec in order: name (label + object), ra_hours,
+    dec_degrees, start_utc, alt/ha at start and end, source."""
+    lat = float(getattr(config, "observatory_lat", 31.9))
+    lon = float(getattr(config, "observatory_lon", -109.0))
+    t = (start_utc or datetime.utcnow()).replace(tzinfo=None)
+    dur_h = max(0.0, float(duration_s)) / 3600.0
+    cands = _candidates(projects)
+    out: list[dict] = []
+    used: set[str] = set()
+    for i, spec in enumerate(list(specs or [])[:MAX_FIELDS]):
+        label = str(spec.get("label") or f"F{i + 1}").strip()[:24]
+        mid = t + timedelta(hours=dur_h / 2)
+        end = t + timedelta(hours=dur_h)
+        if spec.get("ra") is not None and spec.get("dec") is not None:
+            ra, dec, obj, src = float(spec["ra"]), float(spec["dec"]), None, "request"
+        else:
+            want_ha = float(spec.get("ha", 0.0))
+            want_dec = spec.get("dec")
+            best, best_score = None, None
+            for c in cands:
+                if c["name"].lower() in used:
+                    continue
+                ra, dec = c["ra_hours"], c["dec_degrees"]
+                ha0 = hour_angle(ra, t, lon)
+                ha1 = ha0 + dur_h * 1.0027
+                if ha0 < 0.05 and ha1 > -0.1:
+                    continue  # crosses the meridian mid-ladder
+                ha_mid = hour_angle(ra, mid, lon)
+                if abs(ha_mid - want_ha) > FIELD_HA_TOL_H:
+                    continue
+                if min(altitude(ra, dec, t, lat, lon),
+                       altitude(ra, dec, end, lat, lon)) < FIELD_ALT_MIN:
+                    continue
+                score = abs(ha_mid - want_ha)
+                if want_dec is not None:
+                    score += abs(dec - float(want_dec)) / 30.0
+                if "galax" in c.get("type", "").lower():
+                    score += 0.5
+                if best_score is None or score < best_score:
+                    best, best_score = c, score
+            if best is not None:
+                ra, dec, obj, src = (best["ra_hours"], best["dec_degrees"],
+                                     best["name"], best["source"])
+                used.add(best["name"].lower())
+            else:
+                ra = (lst_hours(mid, lon) - want_ha) % 24.0
+                dec = float(want_dec if want_dec is not None else 30.0)
+                obj, src = None, "synthetic"
+        name = f"{label} ({obj})" if obj else label
+        out.append({
+            "label": label, "name": name, "object": obj, "source": src,
+            "ra_hours": round(ra, 4), "dec_degrees": round(dec, 4),
+            "start_utc": t.strftime("%Y-%m-%dT%H:%MZ"),
+            "alt_start_deg": round(altitude(ra, dec, t, lat, lon), 1),
+            "alt_end_deg": round(altitude(ra, dec, end, lat, lon), 1),
+            "ha_start_h": round(hour_angle(ra, t, lon), 2),
+            "ha_end_h": round(hour_angle(ra, end, lon), 2),
+            "est_minutes": round(dur_h * 60),
+        })
+        t = end
+    return out
+
+
 # ------------------------------------------------------------- report
 
 def is_tracking_test(name: Any) -> bool:
