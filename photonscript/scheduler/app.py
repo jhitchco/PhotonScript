@@ -2745,6 +2745,75 @@ async def api_campaign_dismiss(payload: dict = Body(...)):
     return {"ok": True}
 
 
+_SUB_EXTS = (".fits", ".fit", ".fts", ".xisf")
+
+
+def _night_transfer_counts(config, night: str, pending) -> dict:
+    """2026-11-11 transfer widget: one night's subs by rig: shot, kept,
+    filed (passed QA and approved, so the Library has them), and of those
+    on the desktop / still pending / unknown (_transfer_state)."""
+    from photonscript.scheduler.runs import _load_subs
+    rigs: dict[str, dict] = {}
+    for s in _load_subs(config, night):
+        r = rigs.setdefault(s.get("rig") or "rc16", {
+            "shot": 0, "kept": 0, "filed": 0, "on_desktop": 0,
+            "pending": 0, "unknown": 0})
+        r["shot"] += 1
+        if not s.get("passed_qa"):
+            continue
+        r["kept"] += 1
+        if not s.get("reviewed"):
+            continue
+        r["filed"] += 1
+        base = Path(s.get("abs_path") or s.get("file") or "").name
+        st = _transfer_state(base, pending)
+        r["on_desktop" if st == "done" else st or "unknown"] += 1
+    return rigs
+
+
+@app.get("/api/sync/widget")
+def api_sync_widget():
+    """2026-11-11: the dashboard's transfer widget. Subs (FITS/XISF) still
+    moving to the desktop, by Library folder, from the last Syncthing
+    remote-need walk; and tonight's / last night's subs by rig: shot, kept,
+    filed to the Library, on the desktop, pending. Never blocks on
+    Syncthing (serves the last walk)."""
+    from photonscript.shared.localtime import utc_offset_hours
+    config = get_config()
+    pending = _syncthing_pending_names()
+    entries = _remoteneed_cache.get("entries") or []
+    folders: dict[str, dict] = {}
+    n_subs = n_other = b_subs = 0
+    for name, size in entries:
+        norm = name.replace("\\", "/")
+        if not norm.lower().endswith(_SUB_EXTS):
+            n_other += 1
+            continue
+        n_subs += 1
+        b_subs += size
+        parts = norm.split("/")
+        key = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+        g = folders.setdefault(key, {"folder": key, "subs": 0, "bytes": 0})
+        g["subs"] += 1
+        g["bytes"] += size
+    now_local = datetime.utcnow() + timedelta(
+        hours=utc_offset_hours(config, datetime.utcnow()))
+    night = (now_local - timedelta(hours=12)).strftime("%Y-%m-%d")
+    try:
+        by_rig = _night_transfer_counts(config, night, pending)
+    except Exception as e:  # noqa: BLE001 - the widget degrades, never 500s
+        logger.debug("transfer widget counts failed: %s", e)
+        by_rig = {}
+    return {"known": pending is not None,
+            "partial": bool(_remoteneed_cache.get("capped")),
+            "pending_subs": n_subs, "pending_sub_bytes": b_subs,
+            "pending_other": n_other,
+            "need_items": _remoteneed_cache.get("need_items"),
+            "folders": sorted(folders.values(), key=lambda g: -g["subs"])[:8],
+            "walked_at": _remoteneed_cache.get("t") or None,
+            "night": night, "by_rig": by_rig}
+
+
 @app.get("/api/activity")
 def api_activity(limit: int = 8):
     """Newest graded subs for the current night (local evening date)."""

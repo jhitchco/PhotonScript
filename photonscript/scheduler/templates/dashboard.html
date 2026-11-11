@@ -281,6 +281,13 @@
                 <span class="bd" id="addTargetMsg" style="align-self:center;"></span>
                 <button class="btn btn-secondary" id="recountBtn" title="Rebuild accepted counts from every graded night on disk — pulls old-season history into goal progress">Recount from history</button>
             </div>
+            <!-- 2026-11-11 transfer widget: subs still moving to the desktop -->
+            <div id="xferWidget" class="bd" style="margin:-.2rem 0 .8rem;padding:.45rem .7rem;border:1px solid #334155;border-radius:6px;background:#0b1220;display:flex;flex-wrap:wrap;gap:.3rem 1.2rem;align-items:baseline;">
+                <b style="color:#94a3b8;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;">Transfer to desktop</b>
+                <span id="xferMain">checking…</span>
+                <span id="xferNight" style="opacity:.8;"></span>
+                <span id="xferFolders" style="opacity:.7;flex-basis:100%;"></span>
+            </div>
             <details id="queueBox" style="margin:-.2rem 0 .8rem;" hidden>
                 <summary class="bd" style="cursor:pointer;" id="queueSummary"></summary>
                 <div id="queueList" class="bd" style="margin:.4rem 0 0 .8rem;"></div>
@@ -2193,6 +2200,45 @@
     }
     loadQueue();
     setInterval(loadQueue, 30000);
+    // 2026-11-11 transfer widget: how many subs still have to reach the desktop
+    async function loadXfer() {
+        const main = document.getElementById('xferMain');
+        if (!main) return;
+        try {
+            const d = await (await fetch('/api/sync/widget')).json();
+            const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
+            if (!d.known) {
+                main.innerHTML = '<span style="opacity:.6">waiting for the first Syncthing check</span>';
+            } else if (d.pending_subs > 0) {
+                main.innerHTML = '<span style="color:#eab308">⇅ ' + d.pending_subs +
+                    ' sub' + (d.pending_subs === 1 ? '' : 's') + ' to transfer</span> ' +
+                    '<span style="opacity:.6">(' + fmtBytes(d.pending_sub_bytes) +
+                    (d.pending_other ? ', +' + d.pending_other + ' other files' : '') +
+                    (d.partial ? ', partial list' : '') + ')</span>';
+            } else {
+                main.innerHTML = '<span style="color:#4ade80">✓ all subs on the desktop</span>' +
+                    (d.pending_other ? ' <span style="opacity:.6">(' + d.pending_other +
+                     ' other files moving)</span>' : '');
+            }
+            const label = {rc16: 'RC16', piggyback: 'Piggy'};
+            const rigs = Object.entries(d.by_rig || {}).sort((a, b) =>
+                (a[0] !== 'rc16') - (b[0] !== 'rc16'));
+            document.getElementById('xferNight').innerHTML = rigs.length
+                ? esc(d.night) + ': ' + rigs.map(([rg, c]) =>
+                    esc(label[rg] || rg) + ' ' + c.shot + ' shot · ' + c.kept + ' kept · ' +
+                    c.filed + ' filed · ' +
+                    '<span style="color:#4ade80">' + c.on_desktop + ' on desktop</span>' +
+                    (c.pending ? ' · <span style="color:#eab308">' + c.pending + ' pending</span>' : '') +
+                    (c.kept > c.filed ? ' <span style="opacity:.6">(' + (c.kept - c.filed) +
+                     ' awaiting review)</span>' : '')).join(' &nbsp;|&nbsp; ')
+                : esc(d.night) + ': no subs yet';
+            document.getElementById('xferFolders').innerHTML = (d.folders || []).map(g =>
+                esc(g.folder) + ' ' + g.subs).join(' · ');
+        } catch (e) { main.textContent = 'unavailable'; }
+    }
+    loadXfer();
+    setInterval(loadXfer, 30000);
     async function loadRecentSubs() {
         try {
             const d = await (await fetch('/api/activity')).json();
