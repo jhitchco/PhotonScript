@@ -487,6 +487,9 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         groups = sel.groups()
         echo(f"  folders: {', '.join(sel.folders) or 'none'}; {len(sel.lights)} lights "
              + "(" + ", ".join(f"{k[0]} {k[1]} x{len(v)}" for k, v in groups.items()) + ")")
+        if sel.overlap_folders:
+            echo(f"  sky overlap: {sel.overlap_count} light(s) from "
+                 f"{', '.join(sel.overlap_folders)} point at the same field")
         for p, why in sel.skipped[:10]:
             echo(f"  skipped {Path(p).name}: {why}")
     if not sel.lights:
