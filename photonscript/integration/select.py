@@ -35,8 +35,9 @@ RIGS = ("piggyback", "rc16")
 # top-level Library folders that are never targets
 NOT_TARGETS = {"calibration", "piggyback", "bad", "_rejected", "_", "_analysis"}
 LIGHT_EXT = (".fits", ".fit", ".fts", ".xisf")
-# Piggy-600 field is about 3.4 x 2.3 deg; a 0.25 deg offset keeps > 85 % overlap
-PIGGY_OVERLAP_DEG = 0.25
+# Piggy-600 field is about 3.4 x 2.3 deg; a 0.5 deg offset still overlaps > 75 %
+# (M33 Core P2 sits 0.32 deg from NGC 604)
+PIGGY_OVERLAP_DEG = 0.5
 
 
 def sep_deg(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
