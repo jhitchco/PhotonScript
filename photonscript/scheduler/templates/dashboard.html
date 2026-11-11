@@ -2208,7 +2208,11 @@
             const d = await (await fetch('/api/sync/widget')).json();
             const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
                 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]);
-            if (!d.known) {
+            if (!d.known && d.need_count_only) {
+                main.innerHTML = '<span style="color:#eab308">⇅ ' + d.need_count_only.items +
+                    ' files to transfer</span> <span style="opacity:.6">(' +
+                    fmtBytes(d.need_count_only.bytes) + '; per-sub list resumes after the night)</span>';
+            } else if (!d.known) {
                 main.innerHTML = '<span style="opacity:.6">waiting for the first Syncthing check</span>';
             } else if (d.pending_subs > 0) {
                 main.innerHTML = '<span style="color:#eab308">⇅ ' + d.pending_subs +

@@ -37,3 +37,18 @@ def test_widget_unknown_before_first_walk(monkeypatch):
     d = appmod.api_sync_widget()
     assert not d["known"] and d["pending_subs"] == 0
     assert d["by_rig"]["rc16"]["unknown"] == 2
+
+
+def test_widget_falls_back_to_completion_while_armed(monkeypatch):
+    monkeypatch.setattr(runs, "_load_subs", lambda cfg, night: [dict(s) for s in SUBS])
+    monkeypatch.setattr(appmod, "_syncthing_pending_names", lambda: None)
+    monkeypatch.setattr(appmod, "_remoteneed_cache", {})
+    monkeypatch.setattr(appmod, "_syncthing_settings", lambda: ("u", "k", "f", "d"))
+    monkeypatch.setattr(appmod, "_widget_need_cache", {})
+    monkeypatch.setattr(appmod, "_syncthing_need", lambda s: {"items": 0, "bytes": 0})
+    d = appmod.api_sync_widget()
+    assert d["known"] and d["by_rig"]["rc16"]["on_desktop"] == 2
+    monkeypatch.setattr(appmod, "_widget_need_cache", {})
+    monkeypatch.setattr(appmod, "_syncthing_need", lambda s: {"items": 7, "bytes": 9})
+    d = appmod.api_sync_widget()
+    assert not d["known"] and d["need_count_only"] == {"items": 7, "bytes": 9}

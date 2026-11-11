@@ -2746,6 +2746,7 @@ async def api_campaign_dismiss(payload: dict = Body(...)):
 
 
 _SUB_EXTS = (".fits", ".fit", ".fts", ".xisf")
+_widget_need_cache: dict = {}
 
 
 def _night_transfer_counts(config, night: str, pending) -> dict:
@@ -2779,9 +2780,23 @@ def api_sync_widget():
     filed to the Library, on the desktop, pending. Never blocks on
     Syncthing (serves the last walk)."""
     from photonscript.shared.localtime import utc_offset_hours
+    import time as _time
     config = get_config()
     pending = _syncthing_pending_names()
     entries = _remoteneed_cache.get("entries") or []
+    # The per-file walk pauses while ARMED (PS-75); fall back to the cheap
+    # completion count (cached 60 s). Nothing needed = every filed sub is on
+    # the desktop; otherwise the count is shown without a per-file list.
+    need = None
+    if pending is None:
+        settings = _syncthing_settings()
+        if settings is not None:
+            now = _time.time()
+            if now - _widget_need_cache.get("t", 0.0) > 60:
+                _widget_need_cache.update(t=now, need=_syncthing_need(settings))
+            need = _widget_need_cache.get("need")
+            if need is not None and need.get("items") == 0:
+                pending, entries = set(), []
     folders: dict[str, dict] = {}
     n_subs = n_other = b_subs = 0
     for name, size in entries:
@@ -2805,6 +2820,7 @@ def api_sync_widget():
         logger.debug("transfer widget counts failed: %s", e)
         by_rig = {}
     return {"known": pending is not None,
+            "need_count_only": (need if pending is None and need else None),
             "partial": bool(_remoteneed_cache.get("capped")),
             "pending_subs": n_subs, "pending_sub_bytes": b_subs,
             "pending_other": n_other,
