@@ -13,6 +13,7 @@ POST /api/runs/{date}/pointing          {"solve": false} re-run the pass
 GET  /api/runs/{date}/timeline          night timeline rows (mount, guider,
                                         each rig, safety) + sub spans
 GET  /api/status/mount-log?date=&tail=  the raw mount log lines
+GET  /api/mount/ledger?night=&tail=&kind=  PS-252 mount truth ledger
 GET  /api/tonight/strip                 the dashboard "Tonight so far" strip:
                                         roof + one row per rig, collapsed to
                                         exposing / busy / idle, sunset to now
@@ -137,3 +138,14 @@ def api_mount_log(date: str = "", tail: int = 200):
     return {"date": d, "count": len(lines),
             "lines": [{k: v for k, v in r.items() if k != "dt"}
                       for r in lines[-tail:]]}
+
+
+@router.get("/api/mount/ledger")
+def api_mount_ledger(night: str = "", tail: int = 300, kind: str = ""):
+    """PS-252 mount truth ledger: {night, count, lines (kind = sample |
+    event | center | nina, comma list to filter), latest TheSky sample,
+    mapping (last Center), mapping_series, incidents}."""
+    from photonscript.scheduler import mount_ledger
+    from photonscript.shared.phd2_store import night_of
+    cfg = _cfg()
+    return mount_ledger.view(cfg, night or night_of(cfg), tail=tail, kind=kind)

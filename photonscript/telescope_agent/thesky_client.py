@@ -192,6 +192,11 @@ class TheSkyClient:
         and the alt / az."""
         return self._kv("park_state")
 
+    def mount_truth(self) -> dict:
+        """PS-252: position, park / track / slew flags, LastSlewError, the
+        site and TheSky's clock (JD, LST). Reads only."""
+        return self._kv("mount_truth")
+
     def version(self) -> dict:
         return self._kv("version")
 
@@ -342,6 +347,25 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
         ("tracking", "c ? sky6RASCOMTele.IsTracking : ''"),
         ("az", "c ? (sky6RASCOMTele.GetAzAlt(), sky6RASCOMTele.dAz) : ''"),
         ("alt", "c ? sky6RASCOMTele.dAlt : ''")], _MOUNT_PRE),
+    # PS-252: the mount truth ledger. TheSky's own view of where the mount
+    # is plus the site and clock it converts with (a time zone / DST /
+    # clock / longitude error shows as an LST skew). Property reads only,
+    # never Connect().
+    "mount_truth": ([
+        ("connected", "c"),
+        ("parked", "c ? sky6RASCOMTele.IsParked() : ''"),
+        ("tracking", "c ? sky6RASCOMTele.IsTracking : ''"),
+        ("slew_complete", "c ? sky6RASCOMTele.IsSlewComplete : ''"),
+        ("last_slew_error", "c ? sky6RASCOMTele.LastSlewError : ''"),
+        ("ra_h", "c ? (sky6RASCOMTele.GetRaDec(), sky6RASCOMTele.dRa) : ''"),
+        ("dec_d", "c ? sky6RASCOMTele.dDec : ''"),
+        ("az", "c ? (sky6RASCOMTele.GetAzAlt(), sky6RASCOMTele.dAz) : ''"),
+        ("alt", "c ? sky6RASCOMTele.dAlt : ''"),
+        ("latitude", _doc(0)), ("longitude", _doc(1)), ("time_zone", _doc(2)),
+        ("elevation_m", _doc(3)), ("dst_index", _doc(4)),
+        ("use_computer_clock", _doc(5)), ("jd_now", _doc(9)),
+        ("lst_h", "(sky6Utils.ComputeLocalSiderealTime(), sky6Utils.dOut0)")],
+        _MOUNT_PRE),
     # read form only (empty argument); behind thesky_audit_allsky_read
     "allsky_flags": ([
         ("allsky_scripted",

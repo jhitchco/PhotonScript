@@ -707,6 +707,15 @@ async def _start_dawn_mount_check():
 
 
 @app.on_event("startup")
+async def _start_mount_ledger():
+    """PS-252 mount truth ledger: TheSky's own view of the mount, site and
+    clock plus the mapping error at every NINA Center. Always started;
+    reads only; idle when mount_ledger_mode=off."""
+    from photonscript.scheduler.mount_ledger import run_mount_ledger
+    _spawn(run_mount_ledger(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_tpoint_watch():
     """TPoint run watcher: a calibration run's progress, its finish (one
     push), the fitted-model history and the unguided limits epoch. Reads
@@ -926,6 +935,10 @@ _CONFIG_FIELDS = [
     ("nina_watch_idle_restart", "PS_NINA_WATCH_IDLE_RESTART", "NINA watchdog: on IDLE WHILE ARMED, ask the night pilot for Restart tonight from now once per night (off by default; needs night_pilot_mode act)", "Nanny / Alerts", "bool", False, False),
     ("dawn_mount_check_mode", "PS_DAWN_MOUNT_CHECK_MODE", "Dawn mount check (PS-185): alert = one priority page when the mount is unparked and tracking after astro dawn with no armed night or NINA #1 sequence (runs when DISARMED too) | off; never parks", "Nanny / Alerts", "str", False, False),
     ("dawn_mount_check_after_dawn_min", "PS_DAWN_MOUNT_CHECK_AFTER_DAWN_MIN", "Dawn mount check: start checking this many minutes after astro dawn", "Nanny / Alerts", "float", False, False),
+    ("mount_ledger_mode", "PS_MOUNT_LEDGER_MODE", "Mount truth ledger (PS-252): TheSky's own position, site, time zone and clock, the mapping error at every NINA Center, ImagingSystem.ini changes, to mount/<night>_ledger.jsonl. alert = also one push per incident (mapping jump, slew error, site / clock change) | observe = ledger only | off. Reads only", "Nanny / Alerts", "str", False, False),
+    ("mount_ledger_poll_s", "PS_MOUNT_LEDGER_POLL_S", "Mount truth ledger: TheSky read every N s (every 10 min while parked)", "Nanny / Alerts", "float", False, False),
+    ("mount_ledger_slew_poll_s", "PS_MOUNT_LEDGER_SLEW_POLL_S", "Mount truth ledger: TheSky read every N s while a slew is in progress", "Nanny / Alerts", "float", False, False),
+    ("mount_ledger_alert_arcmin", "PS_MOUNT_LEDGER_ALERT_ARCMIN", "Mount truth ledger: a change in TheSky's mapping error (mount minus solve) of more than this between two Centers is a mapping jump incident", "Nanny / Alerts", "float", False, False),
     ("nina_offline_alert", "PS_NINA_OFFLINE_ALERT", "NINA offline watch: while the armer is RUNNING / WATCHING or an arm recipe is dispatched, one priority-1 push per outage when a NINA API stops answering (plus a recovery note); never restarts anything", "Nanny / Alerts", "bool", False, False),
     ("nina_offline_grace_min", "PS_NINA_OFFLINE_GRACE_MIN", "NINA offline watch: minutes a NINA API may not answer before the push", "Nanny / Alerts", "float", False, False),
     ("piggy_guard_mode", "PS_PIGGY_GUARD_MODE", "Piggy guard: alert (one push per night) | panel (run event + morning line, no push) | off, when NINA #2 takes lights while the RC16 mount is parked / not tracking / offline / unknown; never stops anything", "Nanny / Alerts", "str", False, False),

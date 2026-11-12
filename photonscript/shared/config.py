@@ -279,6 +279,12 @@ class PhotonScriptConfig(BaseSettings):
     nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0
+    # PS-252 mount truth ledger: TheSky's own position / site / clock, the
+    # mapping error at every NINA Center, ImagingSystem.ini changes.
+    mount_ledger_mode: str = "alert"  # alert | observe | off (reads only)
+    mount_ledger_poll_s: float = 15.0
+    mount_ledger_slew_poll_s: float = 3.0
+    mount_ledger_alert_arcmin: float = 5.0
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
