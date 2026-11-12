@@ -171,6 +171,15 @@ def _ttl_cache_clear():
 
 
 @pytest.fixture(autouse=True)
+def _park_verify_instant(monkeypatch):
+    """PS-253: the dawn shutdown polls up to 120 s for the mount to read
+    parked after a park command; a test's fake mount often never does.
+    Tests that exercise the wait set the armer's _park_verify_s themselves."""
+    from photonscript.scheduler.armer import Armer
+    monkeypatch.setattr(Armer, "_park_verify_s", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _settings_ledger_off(monkeypatch):
     """Settings ledger: the armer would snapshot NINA, PHD2 and TheSky (over
     the network) on every state change; no test should. The ledger's own

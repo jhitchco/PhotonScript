@@ -118,14 +118,76 @@ async def test_thesky_says_parked_when_nina_mount_disconnected(tmp_path,
 async def test_unparked_mount_still_parks(tmp_path, monkeypatch):
     a = _armer(tmp_path)
     _patch_rigs(monkeypatch)
+    _no_thesky(a, monkeypatch, None)
+    a._park_verify_s = 0
     calls: list = []
     _fake_nina(a, monkeypatch, {
         "guider": {"Response": {"Connected": True, "State": "Guiding"}},
         "mount_info": {"Response": {"Connected": True, "AtPark": False}}},
         calls)
+    real = a._nina
+
+    async def _nina(key, *args, **kw):   # NINA reads parked once it parked
+        if key == "mount_info" and "mount_park" in calls:
+            calls.append(key)
+            return {"Response": {"Connected": True, "AtPark": True}}
+        return await real(key, *args, **kw)
+    monkeypatch.setattr(a, "_nina", _nina)
     report = await a.dawn_shutdown()
     assert "mount_park" in calls and "guider_stop" in calls
     assert "park ok" in report and "already" not in report
+    assert "FAILED" not in report
+
+
+@pytest.mark.asyncio
+async def test_2026_11_12_park_reply_but_thesky_still_unparked_is_failed(tmp_path,
+                                                                          monkeypatch):
+    """PS-253: NINA's ASCOM Park threw, NINA logged "Mount has parked" and
+    the API answered; TheSky kept reading unparked and tracking."""
+    a = _armer(tmp_path)
+    _patch_rigs(monkeypatch)
+    _no_thesky(a, monkeypatch, False)
+    a._park_verify_s = 0
+    calls: list = []
+    _fake_nina(a, monkeypatch, {
+        "mount_info": {"Response": {"Connected": True, "AtPark": False}},
+        "mount_park": {"Success": True}}, calls)
+    report = await a.dawn_shutdown()
+    assert "mount_park" in calls
+    assert "park FAILED (commanded, but TheSky still reports the mount unparked" in report
+    assert a.shutdown["failed"] and "park FAILED" in a.shutdown["failed"][0]
+
+
+@pytest.mark.asyncio
+async def test_park_verify_waits_for_thesky(tmp_path, monkeypatch):
+    a = _armer(tmp_path)
+    _patch_rigs(monkeypatch)
+    seq = iter([False, False, True])
+
+    async def _ts():
+        return next(seq, True)
+    monkeypatch.setattr(a, "_thesky_parked", _ts)
+    a._park_verify_s, a._park_verify_poll_s = 30, 0.01
+    calls: list = []
+    _fake_nina(a, monkeypatch, {
+        "mount_info": {"Response": {"Connected": True, "AtPark": False}}}, calls)
+    report = await a.dawn_shutdown()
+    assert "park ok" in report and "FAILED" not in report
+
+
+@pytest.mark.asyncio
+async def test_park_unverifiable_says_so(tmp_path, monkeypatch):
+    a = _armer(tmp_path)
+    _patch_rigs(monkeypatch)
+    _no_thesky(a, monkeypatch, None)
+    a._park_verify_s = 0
+    monkeypatch.setattr(a, "_mount_log_parked", lambda: None)
+    calls: list = []
+    _fake_nina(a, monkeypatch, {
+        "mount_info": {"Response": {"Connected": False}},
+        "mount_park": {"Success": True}}, calls)
+    report = await a.dawn_shutdown()
+    assert "park ok (unverified" in report
 
 
 @pytest.mark.asyncio

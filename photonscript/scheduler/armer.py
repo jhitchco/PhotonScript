@@ -1217,6 +1217,30 @@ class Armer:
             logger.info("mount log park read failed: %s", e)
         return None
 
+    _park_verify_s = 120.0
+    _park_verify_poll_s = 5.0
+
+    async def _park_verified(self) -> tuple[bool | None, str]:
+        """PS-253: (parked, source) after a park command, polled until the
+        mount reports parked or _park_verify_s passes. TheSky's own IsParked
+        wins over NINA's AtPark (NINA reported parked on 2026-11-12 after its
+        ASCOM Park threw); NINA, then the mount log, only when TheSky cannot
+        say. Never raises."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, float(self._park_verify_s))
+        last: tuple[bool | None, str] = (None, "")
+        while True:
+            try:
+                ts = await self._thesky_parked()
+                last = (ts, "TheSky") if ts is not None else await self._park_state()
+            except Exception as e:  # noqa: BLE001
+                logger.info("park verify read failed: %s", e)
+            if last[0]:
+                return last
+            if loop.time() >= deadline:
+                return last
+            await asyncio.sleep(max(0.5, float(self._park_verify_poll_s)))
+
     async def _park_step(self) -> str:
         """PS-159: the dawn shutdown's park, reading the state first.
         Already parked = "park ok (already parked[, source])"; a failed
@@ -1232,7 +1256,17 @@ class Armer:
             self.detail = f"mount_park: {e}"
             ok = False
         if ok:
-            return "park ok"
+            # PS-253: a reply is not a park. 2026-11-12 05:52 NINA's ASCOM
+            # Park threw (NullReferenceException), NINA still logged "Mount
+            # has parked", the API answered, and this step said "park ok"
+            # while the mount kept tracking west with the roof open.
+            parked, src = await self._park_verified()
+            if parked:
+                return "park ok"
+            if parked is False:
+                return (f"park FAILED (commanded, but {src} still reports the "
+                        f"mount unparked after {self._park_verify_s:g} s)")
+            return "park ok (unverified: neither TheSky nor NINA reads the mount)"
         why = self.detail
         parked, src = await self._park_state()
         if parked:
