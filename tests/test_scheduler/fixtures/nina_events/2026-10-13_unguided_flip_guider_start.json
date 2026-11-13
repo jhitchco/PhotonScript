@@ -1,0 +1,374 @@
+{
+ "Response": [
+  {
+   "Event": "CAMERA-DISCONNECTED",
+   "Time": "2026-10-13T16:35:59.3301141-06:00"
+  },
+  {
+   "Event": "CAMERA-CONNECTED",
+   "Time": "2026-10-13T16:36:00.1673877-06:00"
+  },
+  {
+   "Event": "MOUNT-DISCONNECTED",
+   "Time": "2026-10-13T16:36:03.9098064-06:00"
+  },
+  {
+   "Event": "MOUNT-CONNECTED",
+   "Time": "2026-10-13T16:36:06.8813094-06:00"
+  },
+  {
+   "Event": "SAFETY-DISCONNECTED",
+   "Time": "2026-10-13T16:36:10.5838451-06:00"
+  },
+  {
+   "Event": "SAFETY-CONNECTED",
+   "Time": "2026-10-13T16:36:11.002462-06:00"
+  },
+  {
+   "Event": "FILTERWHEEL-DISCONNECTED",
+   "Time": "2026-10-13T16:36:23.7249013-06:00"
+  },
+  {
+   "Event": "FILTERWHEEL-CONNECTED",
+   "Time": "2026-10-13T16:36:24.4960379-06:00"
+  },
+  {
+   "Event": "FOCUSER-DISCONNECTED",
+   "Time": "2026-10-13T16:36:27.8974798-06:00"
+  },
+  {
+   "Event": "FOCUSER-CONNECTED",
+   "Time": "2026-10-13T16:36:28.6379116-06:00"
+  },
+  {
+   "Event": "GUIDER-CONNECTED",
+   "Time": "2026-10-13T16:36:32.3586027-06:00"
+  },
+  {
+   "Event": "WEATHER-DISCONNECTED",
+   "Time": "2026-10-13T16:36:35.7921504-06:00"
+  },
+  {
+   "Event": "WEATHER-CONNECTED",
+   "Time": "2026-10-13T16:36:35.9642988-06:00"
+  },
+  {
+   "IsSafe": true,
+   "Time": "2026-10-13T18:57:19.0192075-06:00",
+   "Event": "SAFETY-CHANGED"
+  },
+  {
+   "Event": "SEQUENCE-STARTING",
+   "Time": "2026-10-13T19:36:07.1283595-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T19:38:32.9579216-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T19:40:37.1914963-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T19:44:02.7286507-06:00"
+  },
+  {
+   "Event": "MOUNT-CENTER",
+   "Time": "2026-10-13T19:44:54.1067"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-13T20:05:44.8658479-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T20:09:45.7409316-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T20:10:28.7347703-06:00"
+  },
+  {
+   "Event": "SEQUENCE-FINISHED",
+   "Time": "2026-10-13T20:10:36.6732315-06:00"
+  },
+  {
+   "Event": "SEQUENCE-STARTING",
+   "Time": "2026-10-13T20:10:40.6554445-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T20:10:41.2959627-06:00"
+  },
+  {
+   "Event": "MOUNT-CENTER",
+   "Time": "2026-10-13T20:11:12.5779"
+  },
+  {
+   "Event": "GUIDER-DISCONNECTED",
+   "Time": "2026-10-13T20:13:33.8745641-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-13T20:14:17.1489591-06:00"
+  },
+  {
+   "Event": "SEQUENCE-FINISHED",
+   "Time": "2026-10-13T20:14:17.1499164-06:00"
+  },
+  {
+   "Event": "GUIDER-CONNECTED",
+   "Time": "2026-10-13T20:38:46.5393404-06:00"
+  },
+  {
+   "Event": "SEQUENCE-STARTING",
+   "Time": "2026-10-13T20:38:48.6924519-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T20:38:49.3906573-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T20:38:49.8570901-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T20:39:28.7492011-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T20:42:54.803662-06:00"
+  },
+  {
+   "Event": "MOUNT-CENTER",
+   "Time": "2026-10-13T20:42:54.8848"
+  },
+  {
+   "Event": "SEQUENCE-FINISHED",
+   "Time": "2026-10-13T20:54:41.3973057-06:00"
+  },
+  {
+   "Event": "SEQUENCE-STARTING",
+   "Time": "2026-10-13T20:54:43.4037121-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T20:54:44.155792-06:00"
+  },
+  {
+   "Event": "MOUNT-UNPARKED",
+   "Time": "2026-10-13T20:54:45.0394745-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T20:55:22.6996157-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T20:58:48.7784417-06:00"
+  },
+  {
+   "Event": "MOUNT-CENTER",
+   "Time": "2026-10-13T20:58:48.8512"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T21:59:02.1813694-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T22:02:22.7137848-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T22:51:58.2640172-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T22:55:18.7925349-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T23:15:28.7257457-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T23:18:48.8403907-06:00"
+  },
+  {
+   "Event": "MOUNT-CENTER",
+   "Time": "2026-10-13T23:18:48.9288"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-13T23:31:48.7220017-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-13T23:38:18.7860411-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T00:08:40.6356194-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T00:12:20.8952071-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T00:51:45.2732652-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T00:58:14.8233876-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T01:16:33.1019906-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T01:19:52.7871016-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T01:23:15.6459483-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T01:26:34.850644-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T01:50:54.8729672-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T01:54:34.7974461-06:00"
+  },
+  {
+   "Event": "MOUNT-BEFORE-FLIP",
+   "Time": "2026-10-14T02:24:54.9900389-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-14T02:28:03.2949669-06:00"
+  },
+  {
+   "Event": "MOUNT-AFTER-FLIP",
+   "Time": "2026-10-14T02:28:32.609165-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T02:52:41.1606811-06:00"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-14T02:52:42.3028264-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T02:56:40.8087523-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-14T02:57:20.3856297-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T03:36:51.5536026-06:00"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-14T03:36:52.6606164-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T03:40:12.8480532-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-14T03:40:51.5765004-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-14T04:14:13.48138-06:00"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-14T04:14:14.6545977-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-14T04:18:14.8555223-06:00"
+  },
+  {
+   "Event": "GUIDER-START",
+   "Time": "2026-10-14T04:18:54.8691709-06:00"
+  },
+  {
+   "IsSafe": false,
+   "Time": "2026-10-14T04:20:35.0181001-06:00",
+   "Event": "SAFETY-CHANGED"
+  },
+  {
+   "Event": "GUIDER-STOP",
+   "Time": "2026-10-14T04:20:37.4690045-06:00"
+  },
+  {
+   "Event": "MOUNT-PARKED",
+   "Time": "2026-10-14T04:20:55.9610927-06:00"
+  },
+  {
+   "Event": "MOUNT-PARKED",
+   "Time": "2026-10-14T05:57:40.800426-06:00"
+  },
+  {
+   "Event": "CAMERA-DISCONNECTED",
+   "Time": "2026-10-14T06:00:58.6523326-06:00"
+  },
+  {
+   "Event": "FILTERWHEEL-DISCONNECTED",
+   "Time": "2026-10-14T06:00:58.6959722-06:00"
+  },
+  {
+   "Event": "FOCUSER-DISCONNECTED",
+   "Time": "2026-10-14T06:00:59.1162847-06:00"
+  },
+  {
+   "Event": "MOUNT-DISCONNECTED",
+   "Time": "2026-10-14T06:00:59.7300694-06:00"
+  },
+  {
+   "Event": "GUIDER-DISCONNECTED",
+   "Time": "2026-10-14T06:00:59.7304418-06:00"
+  },
+  {
+   "Event": "WEATHER-DISCONNECTED",
+   "Time": "2026-10-14T06:00:59.7424008-06:00"
+  },
+  {
+   "Event": "SAFETY-DISCONNECTED",
+   "Time": "2026-10-14T06:00:59.7528462-06:00"
+  },
+  {
+   "Event": "SEQUENCE-FINISHED",
+   "Time": "2026-10-14T06:01:00.9828771-06:00"
+  },
+  {
+   "Event": "SAFETY-DISCONNECTED",
+   "Time": "2026-10-14T06:03:23.4723081-06:00"
+  },
+  {
+   "Event": "SAFETY-CONNECTED",
+   "Time": "2026-10-14T06:03:24.0746854-06:00"
+  }
+ ],
+ "Error": "",
+ "StatusCode": 200,
+ "Success": true,
+ "Type": "API"
+}

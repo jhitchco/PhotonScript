@@ -1,0 +1,201 @@
+{
+ "Response": [
+  {
+   "Event": "SEQUENCE-STARTING",
+   "Time": "2026-10-05T19:36:00.0000000-06:00"
+  },
+  {
+   "Event": "SAFETY-CHANGED",
+   "IsSafe": true,
+   "Time": "2026-10-05T20:01:00.0000000-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-05T20:10:04.0000000-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:10:32.0000000-06:00",
+   "Position": 5384,
+   "HFR": 6.4
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:11:00.0000000-06:00",
+   "Position": 5478,
+   "HFR": 5.65
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:11:28.0000000-06:00",
+   "Position": 5572,
+   "HFR": 4.9
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:11:56.0000000-06:00",
+   "Position": 5666,
+   "HFR": 4.15
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:12:24.0000000-06:00",
+   "Position": 5760,
+   "HFR": 3.4
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:12:52.0000000-06:00",
+   "Position": 5854,
+   "HFR": 4.15
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:13:20.0000000-06:00",
+   "Position": 5948,
+   "HFR": 4.9
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T20:13:48.0000000-06:00",
+   "Position": 6042,
+   "HFR": 5.65
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-05T20:14:21.0000000-06:00"
+  },
+  {
+   "Event": "IMAGE-SAVE",
+   "Time": "2026-10-05T20:20:04.0000000-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-05T22:19:15.0000000-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:19:43.0000000-06:00",
+   "Position": 5369,
+   "HFR": 6.4
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:20:11.0000000-06:00",
+   "Position": 5463,
+   "HFR": 5.65
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:20:39.0000000-06:00",
+   "Position": 5557,
+   "HFR": 4.9
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:21:07.0000000-06:00",
+   "Position": 5651,
+   "HFR": 4.15
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:21:35.0000000-06:00",
+   "Position": 5745,
+   "HFR": 3.4
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:22:03.0000000-06:00",
+   "Position": 5839,
+   "HFR": 4.15
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:22:31.0000000-06:00",
+   "Position": 5933,
+   "HFR": 4.9
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-05T22:22:59.0000000-06:00",
+   "Position": 6027,
+   "HFR": 5.65
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-05T22:23:32.0000000-06:00"
+  },
+  {
+   "Event": "IMAGE-SAVE",
+   "Time": "2026-10-05T22:29:15.0000000-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-STARTING",
+   "Time": "2026-10-06T01:09:00.0000000-06:00"
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:09:28.0000000-06:00",
+   "Position": 5355,
+   "HFR": 6.4
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:09:56.0000000-06:00",
+   "Position": 5449,
+   "HFR": 5.65
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:10:24.0000000-06:00",
+   "Position": 5543,
+   "HFR": 4.9
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:10:52.0000000-06:00",
+   "Position": 5637,
+   "HFR": 4.15
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:11:20.0000000-06:00",
+   "Position": 5731,
+   "HFR": 3.4
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:11:48.0000000-06:00",
+   "Position": 5825,
+   "HFR": 4.15
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:12:16.0000000-06:00",
+   "Position": 5919,
+   "HFR": 4.9
+  },
+  {
+   "Event": "AUTOFOCUS-POINT-ADDED",
+   "Time": "2026-10-06T01:12:44.0000000-06:00",
+   "Position": 6013,
+   "HFR": 5.65
+  },
+  {
+   "Event": "AUTOFOCUS-FINISHED",
+   "Time": "2026-10-06T01:13:17.0000000-06:00"
+  },
+  {
+   "Event": "IMAGE-SAVE",
+   "Time": "2026-10-06T01:19:00.0000000-06:00"
+  },
+  {
+   "Event": "SEQUENCE-FINISHED",
+   "Time": "2026-10-06T05:58:00.0000000-06:00"
+  }
+ ],
+ "Error": "",
+ "StatusCode": 200,
+ "Success": true,
+ "Type": "API"
+}

@@ -1,0 +1,440 @@
+2026-11-04T19:05:48.9871|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T19:05:49.0679|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T19:05:49.0719|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11087
+2026-11-04T19:08:07.6415|INFO|HocusFocusVM.cs|AutoFocusEngine_Completed|1068|AutoFocus completed with focuser starting at 11087 and ending at 11050
+2026-11-04T19:08:07.6578|INFO|FocuserMediator.cs|BroadcastSuccessfulAutoFocusRun|46|Autofocus notification received - Temperature 19.290000915527344
+2026-11-04T19:08:07.9152|INFO|SequenceItem.cs|Run|254|Finishing Category: Focuser, Item: RunAutofocus
+2026-11-04T19:08:09.5740|INFO|SequenceItem.cs|Run|208|Starting Category: * Instruction Set *, Container: NINA.Sequencer.Container.SequentialContainer, Strategy: SequentialStrategy, Items[CREATED]: 2, Conditions: Condition: SafetyMonitorCondition, Condition: TimeCondition, Time: 5:12:59h, , Triggers: Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5°Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T20:10:17.6490|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T20:10:17.6500|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T20:10:17.7220|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T20:10:17.7222|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11050
+2026-11-04T20:12:35.5773|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 4.030602445676186 is significantly worse than original HFR 2.6256473367783233
+2026-11-04T20:12:35.5779|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10996 and re-attempting once.
+2026-11-04T20:14:45.9369|INFO|HocusFocusVM.cs|AutoFocusEngine_Completed|1068|AutoFocus completed with focuser starting at 11050 and ending at 11034
+2026-11-04T20:14:45.9412|INFO|FocuserMediator.cs|BroadcastSuccessfulAutoFocusRun|46|Autofocus notification received - Temperature 18.290000915527344
+2026-11-04T20:14:46.2538|INFO|SequenceItem.cs|Run|254|Finishing Category: Focuser, Item: RunAutofocus
+2026-11-04T20:52:15.7180|INFO|AutofocusAfterHFRIncreaseTrigger.cs|ShouldTrigger|221|Autofocus after HFR change should be triggered, as current HFR trend is 14.52% higher compared to threshold of 10%
+2026-11-04T20:52:15.7181|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10
+2026-11-04T20:52:15.7186|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T20:52:15.7750|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T20:52:15.7751|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T20:54:33.4429|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.285978659530489 is significantly worse than original HFR 2.3196126954517347
+2026-11-04T20:54:33.4430|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10987 and re-attempting once.
+2026-11-04T20:56:35.4425|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.454819907945658 is significantly worse than original HFR 2.3196126954517347
+2026-11-04T20:56:35.7011|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T20:56:40.9503|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T20:56:40.9910|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T20:56:40.9912|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T20:58:45.5821|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 9.128317485649236 is significantly worse than original HFR 2.3359883473322753
+2026-11-04T20:58:45.5823|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 11230 and re-attempting once.
+2026-11-04T21:01:55.6043|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 7.93279854317021 is significantly worse than original HFR 2.3359883473322753
+2026-11-04T21:01:55.8915|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:02:00.9600|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:02:00.9602|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-04T21:02:00.9604|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10 - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-04T21:05:04.4662|INFO|AutofocusAfterHFRIncreaseTrigger.cs|ShouldTrigger|221|Autofocus after HFR change should be triggered, as current HFR trend is 14.52% higher compared to threshold of 10%
+2026-11-04T21:05:04.4663|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10
+2026-11-04T21:05:04.4663|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T21:05:04.5091|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:05:04.5092|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:07:21.5463|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.237372967980788 is significantly worse than original HFR 2.348114662169151
+2026-11-04T21:07:21.5464|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10996 and re-attempting once.
+2026-11-04T21:09:37.4634|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 4.283334608606406 is significantly worse than original HFR 2.348114662169151
+2026-11-04T21:09:37.7267|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:09:42.9362|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:09:42.9711|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:09:42.9712|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:12:01.6314|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.310375068306122 is significantly worse than original HFR 2.668686550652657
+2026-11-04T21:12:01.6316|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 11001 and re-attempting once.
+2026-11-04T21:14:03.5473|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.779052037516759 is significantly worse than original HFR 2.668686550652657
+2026-11-04T21:14:03.8011|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:14:08.9361|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:14:08.9363|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-04T21:14:08.9364|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10 - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-04T21:17:10.9784|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T21:17:10.9784|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T21:17:11.0220|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:17:11.0221|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:19:29.4186|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.9231519056672606 is significantly worse than original HFR 2.431821112185659
+2026-11-04T21:19:29.4187|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10997 and re-attempting once.
+2026-11-04T21:21:31.4097|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.3840981477360734 is significantly worse than original HFR 2.431821112185659
+2026-11-04T21:21:31.6691|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:21:36.9400|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:21:36.9811|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:21:36.9813|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:23:55.6061|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.9872940672921384 is significantly worse than original HFR 2.219129693863193
+2026-11-04T21:23:55.6062|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10989 and re-attempting once.
+2026-11-04T21:25:57.4316|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.4721196840706385 is significantly worse than original HFR 2.219129693863193
+2026-11-04T21:25:57.6837|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:26:02.9892|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:26:02.9893|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-04T21:26:02.9894|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-04T21:29:05.0299|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T21:29:05.0300|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T21:29:05.0712|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:29:05.0713|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:31:23.4754|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.0056852976726907 is significantly worse than original HFR 1.2810433302290156
+2026-11-04T21:31:23.4755|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10984 and re-attempting once.
+2026-11-04T21:33:25.5155|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.3728467895990675 is significantly worse than original HFR 1.2810433302290156
+2026-11-04T21:33:25.7879|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:33:30.9672|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:33:31.0020|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:33:31.0021|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:35:49.5674|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.085128333620001 is significantly worse than original HFR 2.0176829614662664
+2026-11-04T21:35:49.5675|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10989 and re-attempting once.
+2026-11-04T21:37:51.4677|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.4631903344425017 is significantly worse than original HFR 2.0176829614662664
+2026-11-04T21:37:51.7213|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:37:56.9775|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:37:56.9777|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-04T21:37:56.9778|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-04T21:40:59.0732|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T21:40:59.0733|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T21:40:59.1217|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:40:59.1219|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:43:17.4271|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.8915845713760153 is significantly worse than original HFR 1.9692725051633757
+2026-11-04T21:43:17.4273|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10986 and re-attempting once.
+2026-11-04T21:45:19.4904|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1055748592388963 is significantly worse than original HFR 1.9692725051633757
+2026-11-04T21:45:19.5105|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:45:24.9604|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:45:24.9963|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:45:24.9964|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:47:43.5711|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.9656834683058597 is significantly worse than original HFR 2.0536378706693865
+2026-11-04T21:47:43.5713|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10982 and re-attempting once.
+2026-11-04T21:49:45.4560|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.4470977984387674 is significantly worse than original HFR 2.0536378706693865
+2026-11-04T21:49:45.7165|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 11034
+2026-11-04T21:49:50.9794|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T21:49:50.9797|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-04T21:49:50.9797|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-04T21:52:52.9984|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T21:52:52.9984|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T21:52:53.0457|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T21:52:53.0458|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 11034
+2026-11-04T21:55:11.4316|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.14311047940379 is significantly worse than original HFR 1.991388001135671
+2026-11-04T21:55:11.4318|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10982 and re-attempting once.
+2026-11-04T21:57:35.5580|INFO|HocusFocusVM.cs|AutoFocusEngine_Completed|1068|AutoFocus completed with focuser starting at 11034 and ending at 10980
+2026-11-04T21:57:35.5598|INFO|FocuserMediator.cs|BroadcastSuccessfulAutoFocusRun|46|Autofocus notification received - Temperature 16.290000915527344
+2026-11-04T21:57:35.8271|INFO|SequenceItem.cs|Run|254|Finishing Category: Focuser, Item: RunAutofocus
+2026-11-04T22:11:31.4892|INFO|SequenceItem.cs|Run|208|Starting Category: * Instruction Set *, Container: NINA.Sequencer.Container.SequentialContainer, Strategy: SequentialStrategy, Items[CREATED]: 2, Conditions: Condition: SafetyMonitorCondition, Condition: TimeCondition, Time: 5:12:59h, , Triggers: Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5°Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T22:42:38.6731|INFO|AutofocusAfterHFRIncreaseTrigger.cs|ShouldTrigger|221|Autofocus after HFR change should be triggered, as current HFR trend is 10.12% higher compared to threshold of 10%
+2026-11-04T22:42:38.6731|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterHFRIncreaseTrigger, Amount: 10
+2026-11-04T22:42:38.6732|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T22:42:38.7134|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T22:42:38.7136|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10980
+2026-11-04T22:44:43.5263|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7547291179738704 is significantly worse than original HFR 1.9613038578972029
+2026-11-04T22:44:43.5265|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10962 and re-attempting once.
+2026-11-04T22:46:45.5052|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.401377559233781 is significantly worse than original HFR 1.9613038578972029
+2026-11-04T22:46:45.7581|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10980
+2026-11-04T22:46:50.9771|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T22:46:51.0201|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T22:46:51.0202|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10980
+2026-11-04T22:48:55.4705|INFO|HocusFocusVM.cs|AutoFocusEngine_Completed|1068|AutoFocus completed with focuser starting at 10980 and ending at 10961
+2026-11-04T22:48:55.4723|INFO|FocuserMediator.cs|BroadcastSuccessfulAutoFocusRun|46|Autofocus notification received - Temperature 15.289999961853027
+2026-11-04T22:48:55.7365|INFO|SequenceItem.cs|Run|254|Finishing Category: Focuser, Item: RunAutofocus
+2026-11-04T23:49:37.2937|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-04T23:49:37.2938|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-04T23:49:37.3431|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T23:49:37.3433|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-04T23:51:55.3910|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.8823120827637254 is significantly worse than original HFR 2.103803755359446
+2026-11-04T23:51:55.3912|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10929 and re-attempting once.
+2026-11-04T23:53:57.4237|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.2799056332406438 is significantly worse than original HFR 2.103803755359446
+2026-11-04T23:53:57.6857|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-04T23:54:02.9440|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T23:54:02.9915|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-04T23:54:02.9916|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-04T23:56:21.5298|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.70489237451983 is significantly worse than original HFR 2.312149478870084
+2026-11-04T23:56:21.5299|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10930 and re-attempting once.
+2026-11-04T23:58:23.4417|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.4256926877119462 is significantly worse than original HFR 2.312149478870084
+2026-11-04T23:58:23.4720|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-04T23:58:28.9363|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-04T23:58:28.9365|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-04T23:58:28.9366|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T00:01:31.0180|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T00:01:31.0181|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T00:01:31.0688|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:01:31.0690|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:03:49.4892|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.755234516684768 is significantly worse than original HFR 2.0793907895036314
+2026-11-05T00:03:49.4894|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10924 and re-attempting once.
+2026-11-05T00:05:51.4567|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1858892271669297 is significantly worse than original HFR 2.0793907895036314
+2026-11-05T00:05:51.4896|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:05:56.9537|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:05:56.9972|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:05:56.9973|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:08:15.4652|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7210626025948312 is significantly worse than original HFR 2.0714533500622974
+2026-11-05T00:08:15.4654|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10927 and re-attempting once.
+2026-11-05T00:10:17.4459|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.2456286411860087 is significantly worse than original HFR 2.0714533500622974
+2026-11-05T00:10:17.7127|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:10:22.9663|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:10:22.9664|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T00:10:22.9665|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T00:13:24.9718|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T00:13:24.9720|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T00:13:25.0157|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:13:25.0159|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:15:43.5140|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7851536154570664 is significantly worse than original HFR 2.0936915181673834
+2026-11-05T00:15:43.5141|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10927 and re-attempting once.
+2026-11-05T00:17:45.4791|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1652772872974646 is significantly worse than original HFR 2.0936915181673834
+2026-11-05T00:17:45.7361|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:17:50.9806|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:17:51.0260|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:17:51.0276|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:20:09.3953|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.748703907513147 is significantly worse than original HFR 2.0816112429134384
+2026-11-05T00:20:09.3955|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10927 and re-attempting once.
+2026-11-05T00:22:11.4403|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1627565230511605 is significantly worse than original HFR 2.0816112429134384
+2026-11-05T00:22:11.6893|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:22:16.9478|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:22:16.9480|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T00:22:16.9480|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T00:25:19.0173|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T00:25:19.0174|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T00:25:19.0823|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:25:19.0825|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:27:37.6360|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.65293808528269 is significantly worse than original HFR 2.11992682586533
+2026-11-05T00:27:37.6362|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10927 and re-attempting once.
+2026-11-05T00:29:39.4690|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.291162505540142 is significantly worse than original HFR 2.11992682586533
+2026-11-05T00:29:39.7264|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:29:44.9794|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:29:45.0226|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:29:45.0227|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:32:03.4468|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7520100494938244 is significantly worse than original HFR 2.181842888605673
+2026-11-05T00:32:03.4469|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10921 and re-attempting once.
+2026-11-05T00:34:05.5310|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.247391439083887 is significantly worse than original HFR 2.181842888605673
+2026-11-05T00:34:05.8010|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:34:10.9474|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:34:10.9476|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T00:34:10.9476|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T00:37:15.3575|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T00:37:15.3575|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T00:37:15.4545|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:37:15.4548|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:39:33.4844|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.860865058380362 is significantly worse than original HFR 2.066900426741965
+2026-11-05T00:39:33.4845|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10915 and re-attempting once.
+2026-11-05T00:41:35.4623|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.214345078689687 is significantly worse than original HFR 2.066900426741965
+2026-11-05T00:41:35.7125|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:41:40.9931|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:41:41.0266|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:41:41.0267|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:43:59.4471|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.8496648088275602 is significantly worse than original HFR 2.0132377557531624
+2026-11-05T00:43:59.4472|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10915 and re-attempting once.
+2026-11-05T00:46:01.4832|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.191733557128101 is significantly worse than original HFR 2.0132377557531624
+2026-11-05T00:46:01.7349|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:46:06.9446|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:46:06.9449|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T00:46:06.9450|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T00:49:09.0351|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T00:49:09.0352|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T00:49:09.0838|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:49:09.0839|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:51:27.4329|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7251036476763604 is significantly worse than original HFR 2.0369269265830585
+2026-11-05T00:51:27.4330|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10916 and re-attempting once.
+2026-11-05T00:53:29.3994|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.374956834704812 is significantly worse than original HFR 2.0369269265830585
+2026-11-05T00:53:29.6657|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:53:34.9960|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:53:35.0452|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T00:53:35.0453|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T00:55:53.4180|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.889570371120529 is significantly worse than original HFR 1.9369504608777395
+2026-11-05T00:55:53.4182|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10906 and re-attempting once.
+2026-11-05T00:57:55.3701|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.9634320515818704 is significantly worse than original HFR 1.9369504608777395
+2026-11-05T00:57:55.6214|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T00:58:00.9678|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T00:58:00.9680|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T00:58:00.9682|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T01:01:06.2746|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T01:01:06.2747|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T01:01:06.3146|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:01:06.3147|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:03:23.4399|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.8367776962396736 is significantly worse than original HFR 1.865180164817429
+2026-11-05T01:03:23.4400|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10901 and re-attempting once.
+2026-11-05T01:05:25.4452|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.21116823758181 is significantly worse than original HFR 1.865180164817429
+2026-11-05T01:05:25.6905|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:05:30.9685|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:05:31.0112|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:05:31.0113|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:07:49.4558|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.81375755398735 is significantly worse than original HFR 1.8806661663309028
+2026-11-05T01:07:49.4559|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10899 and re-attempting once.
+2026-11-05T01:09:51.4689|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.2126682534409783 is significantly worse than original HFR 1.8806661663309028
+2026-11-05T01:09:51.7138|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:09:56.9717|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:09:56.9719|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T01:09:56.9720|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T01:12:59.1082|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5°
+2026-11-05T01:12:59.1086|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T01:12:59.1549|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:12:59.1550|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:15:17.4643|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.723218066327202 is significantly worse than original HFR 1.8946501383623782
+2026-11-05T01:15:17.4645|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10899 and re-attempting once.
+2026-11-05T01:17:19.4773|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.162628942632378 is significantly worse than original HFR 1.8946501383623782
+2026-11-05T01:17:19.7607|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:17:24.9698|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:17:25.0158|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:17:25.0160|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:19:43.4214|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.9124324837069544 is significantly worse than original HFR 1.9224926101931767
+2026-11-05T01:19:43.4215|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10892 and re-attempting once.
+2026-11-05T01:21:45.4652|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.340994104521494 is significantly worse than original HFR 1.9224926101931767
+2026-11-05T01:21:45.7300|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:21:50.9928|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:21:50.9929|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T01:21:50.9931|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5° - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T01:21:50.9932|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T01:21:50.9932|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T01:21:51.0361|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:21:51.0362|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:24:09.4563|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7436158887722 is significantly worse than original HFR 1.9733701190211672
+2026-11-05T01:24:09.4565|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10894 and re-attempting once.
+2026-11-05T01:26:11.5103|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1553182899206806 is significantly worse than original HFR 1.9733701190211672
+2026-11-05T01:26:11.7649|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:26:16.9786|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:26:17.0221|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:26:17.0222|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:28:35.4501|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.8544590206318716 is significantly worse than original HFR 1.8316269187933585
+2026-11-05T01:28:35.4502|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10890 and re-attempting once.
+2026-11-05T01:30:37.3816|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1372947991203866 is significantly worse than original HFR 1.8316269187933585
+2026-11-05T01:30:37.6392|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:30:42.9697|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:30:42.9698|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T01:30:42.9699|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T01:33:45.1144|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5°
+2026-11-05T01:33:45.1145|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T01:33:45.1552|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:33:45.1553|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:36:03.4573|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.89787703888008 is significantly worse than original HFR 1.8427215645068584
+2026-11-05T01:36:03.4574|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10887 and re-attempting once.
+2026-11-05T01:38:05.4100|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.2162936090522996 is significantly worse than original HFR 1.8427215645068584
+2026-11-05T01:38:05.6696|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:38:10.9749|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:38:11.0180|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:38:11.0181|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:40:29.4028|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7402580388274242 is significantly worse than original HFR 1.8422149045311764
+2026-11-05T01:40:29.4029|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10887 and re-attempting once.
+2026-11-05T01:42:31.3698|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.3753384821019754 is significantly worse than original HFR 1.8422149045311764
+2026-11-05T01:42:31.6369|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:42:36.9925|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:42:36.9927|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T01:42:36.9929|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5° - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T01:42:36.9929|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T01:42:36.9930|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T01:42:37.0305|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:42:37.0306|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:45:09.4369|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.6288536719296527 is significantly worse than original HFR 1.8516883674895244
+2026-11-05T01:45:09.4371|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10888 and re-attempting once.
+2026-11-05T01:47:11.5151|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.2432106777419567 is significantly worse than original HFR 1.8516883674895244
+2026-11-05T01:47:11.7673|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:47:16.9936|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:47:17.0372|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:47:17.0373|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:49:49.4635|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.8449217692852953 is significantly worse than original HFR 1.9121935603472364
+2026-11-05T01:49:49.4636|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10886 and re-attempting once.
+2026-11-05T01:51:51.4373|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7968851966201758 is significantly worse than original HFR 1.9121935603472364
+2026-11-05T01:51:51.6863|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:51:56.9829|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:51:56.9831|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T01:51:56.9831|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T01:54:59.0899|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5°
+2026-11-05T01:54:59.0899|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T01:54:59.1334|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:54:59.1335|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T01:57:31.4258|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.765600185768003 is significantly worse than original HFR 1.8844075799552558
+2026-11-05T01:57:31.4259|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10883 and re-attempting once.
+2026-11-05T01:59:33.4820|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.695892613208632 is significantly worse than original HFR 1.8844075799552558
+2026-11-05T01:59:33.7372|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T01:59:38.9748|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T01:59:39.0159|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T01:59:39.0160|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:02:11.4527|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7104821528775944 is significantly worse than original HFR 1.9379308489834506
+2026-11-05T02:02:11.4529|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10883 and re-attempting once.
+2026-11-05T02:04:13.4504|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.293428622698486 is significantly worse than original HFR 1.9379308489834506
+2026-11-05T02:04:13.4763|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T02:04:18.9647|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T02:04:18.9648|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T02:04:18.9649|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5° - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T02:04:18.9650|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T02:04:18.9650|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T02:04:19.0097|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T02:04:19.0098|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:06:51.4630|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.6867945256593986 is significantly worse than original HFR 1.9045752272553396
+2026-11-05T02:06:51.4632|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10883 and re-attempting once.
+2026-11-05T02:08:53.4338|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1966615456942997 is significantly worse than original HFR 1.9045752272553396
+2026-11-05T02:08:53.6858|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T02:08:58.9511|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T02:08:58.9973|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T02:08:58.9975|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:11:31.5461|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.696948042583678 is significantly worse than original HFR 1.906202427297433
+2026-11-05T02:11:31.5462|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10881 and re-attempting once.
+2026-11-05T02:13:33.4377|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.12334150511373 is significantly worse than original HFR 1.906202427297433
+2026-11-05T02:13:33.6964|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T02:13:38.9819|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T02:13:38.9820|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T02:13:38.9821|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTimeTrigger, Amount: 60m - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T02:16:41.0597|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5°
+2026-11-05T02:16:41.0598|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T02:16:41.1016|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T02:16:41.1017|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:19:13.4893|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.7470644238531325 is significantly worse than original HFR 1.92040100494673
+2026-11-05T02:19:13.4895|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10876 and re-attempting once.
+2026-11-05T02:21:15.4360|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1553584429266226 is significantly worse than original HFR 1.92040100494673
+2026-11-05T02:21:15.4697|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T02:21:20.9843|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T02:21:21.0231|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T02:21:21.0232|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:23:53.5058|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.69917323754518 is significantly worse than original HFR 1.9382070332109693
+2026-11-05T02:23:53.5061|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10875 and re-attempting once.
+2026-11-05T02:25:55.4036|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1943485947586483 is significantly worse than original HFR 1.9382070332109693
+2026-11-05T02:25:55.6545|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T02:26:00.9506|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T02:26:00.9507|ERROR|SequenceItem.cs|RunErrorBehavior|195|Instruction Run Autofocus failed after 2 attempts. Error behavior is set to ContinueOnError. Continuing.
+2026-11-05T02:26:00.9508|ERROR|SequenceTrigger.cs|Run|132|Failed: Trigger: AutofocusAfterTemperatureChangeTrigger, Amount: 1.5° - Category: Focuser, Item: RunAutofocus failed to exectue
+2026-11-05T02:26:00.9509|INFO|SequenceTrigger.cs|Run|114|Starting Trigger: AutofocusAfterTimeTrigger, Amount: 60m
+2026-11-05T02:26:00.9509|INFO|SequenceItem.cs|Run|208|Starting Category: Focuser, Item: RunAutofocus
+2026-11-05T02:26:00.9885|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T02:26:00.9886|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:28:33.4049|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.774703055716717 is significantly worse than original HFR 1.9013045861143492
+2026-11-05T02:28:33.4050|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10873 and re-attempting once.
+2026-11-05T02:30:35.4531|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 3.1104246357043954 is significantly worse than original HFR 1.9013045861143492
+2026-11-05T02:30:35.7132|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961
+2026-11-05T02:30:40.9976|ERROR|SequenceItem.cs|Run|263|Category: Focuser, Item: RunAutofocus - 
+NINA.Core.Model.SequenceEntityFailedException: Autofocus failed to run
+2026-11-05T02:30:41.0446|INFO|FocuserMediator.cs|BroadcastAutoFocusRunStarting|92|Autofocus starting notification received
+2026-11-05T02:30:41.0447|INFO|AutoFocusEngine.cs|RunAutoFocus|1659|Starting AutoFocus with initial position 10961
+2026-11-05T02:33:13.4614|WARNING|AutoFocusEngine.cs|ValidateCalculatedFocusPosition|2027|New focus point HFR 2.613395830020227 is significantly worse than original HFR 1.9187960549692837
+2026-11-05T02:33:13.4615|WARNING|AutoFocusEngine.cs|RunAutoFocus|1720|AutoFocus failure (HfrRegression). Re-centering the sweep on the calculated focus point 10876 and re-attempting once.
+2026-11-05T02:34:20.8443|WARNING|AutoFocusEngine.cs|RunImpl|2180|AutoFocus cancelled
+2026-11-05T02:34:20.8443|WARNING|AutoFocusEngine.cs|PerformPostAutoFocusActions|1769|AutoFocus did not complete successfully, so restoring the focuser position to 10961

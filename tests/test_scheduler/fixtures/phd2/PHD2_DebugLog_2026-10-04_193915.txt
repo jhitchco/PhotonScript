@@ -1,0 +1,48 @@
+19:39:15.644 00.002 19328 PHD2 version 2.6.14 begins execution with:
+19:39:18.734 00.001 19328 Status Line: Connecting to Mount ...
+19:39:18.735 00.001 19328 Connecting to mount [ASCOM Telescope Driver for TheSky.]
+19:39:18.735 00.000 19328 ASCOM Scope: Connecting
+19:39:18.735 00.000 19328 Create ASCOM Scope: choice 'ASCOM Telescope Driver for TheSky.' progid ASCOM.SoftwareBisque.Telescope
+19:39:22.577 00.000 19328 ASCOM scope CanSlewAsync is true
+19:39:22.933 00.155 19328 ScopeASCOM::SideOfPier() returns 1
+19:39:22.939 00.006 19328 ASCOM Scope: Connect success
+19:39:22.939 00.000 19328 Status Line: Mount Connected
+19:39:23.089 00.031 19328 ScopeASCOM::SideOfPier() returns 1
+19:39:23.434 00.027 19328 ScopeASCOM::SideOfPier() returns 1
+19:39:33.274 00.000 19328 ASCOM Scope: Disconnecting
+19:39:33.274 00.000 19328 ASCOM Scope: Disconnected Successfully
+19:39:33.278 00.004 19328 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:814->ASCOM Scope: cannot get Declination when not connected to mount
+19:39:33.279 00.000 19328 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:1126->ASCOM Scope: cannot get side of pier when not connected
+19:39:33.280 00.001 19328 ScopeASCOM::SideOfPier() returns -1
+06:13:16.497 00.003 5584 PHD2 version 2.6.14 begins execution with:
+06:13:24.793 00.001 5584 Status Line: Connecting to Mount ...
+06:13:24.795 00.002 5584 Connecting to mount [ASCOM Telescope Driver for TheSky.]
+06:13:24.796 00.001 5584 ASCOM Scope: Connecting
+06:13:24.797 00.001 5584 Create ASCOM Scope: choice 'ASCOM Telescope Driver for TheSky.' progid ASCOM.SoftwareBisque.Telescope
+06:13:28.032 00.000 5584 ASCOM scope CanSlewAsync is true
+06:13:28.218 00.009 5584 ScopeASCOM::SideOfPier() returns 0
+06:13:28.219 00.001 5584 ASCOM Scope: Connect success
+06:13:28.220 00.001 5584 Status Line: Mount Connected
+06:13:29.948 00.031 5584 ScopeASCOM::SideOfPier() returns 0
+06:15:29.260 00.092 5584 ScopeASCOM::SideOfPier() returns 0
+06:15:29.275 00.001 5584 FlipCalibration before: x=-89.7, y=5.1 decFlipRequired=0 sideOfPier=West rotAngle=None parity=+/-
+06:15:29.275 00.000 5584 FlipCalibration after: x=90.3 y=5.1 sideOfPier=East parity=+/+
+06:15:29.323 00.032 5584 ScopeASCOM::SideOfPier() returns 0
+06:15:29.383 00.026 5584 ScopeASCOM::SideOfPier() returns 0
+06:15:30.127 00.711 5584 ScopeASCOM::SideOfPier() returns 0
+07:29:18.378 00.002 5584 ASCOM Scope: Disconnecting
+07:29:18.379 00.001 5584 ASCOM Scope: Disconnected Successfully
+07:29:18.437 00.058 5584 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:814->ASCOM Scope: cannot get Declination when not connected to mount
+07:29:18.439 00.001 5584 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:1126->ASCOM Scope: cannot get side of pier when not connected
+07:29:18.440 00.001 5584 ScopeASCOM::SideOfPier() returns -1
+07:44:42.764 00.004 3216 PHD2 version 2.6.14 begins execution with:
+08:50:18.336 00.001 3216 Status Line: Connecting to Mount ...
+08:50:18.337 00.001 3216 Connecting to mount [ASCOM Telescope Driver for TheSky.]
+08:50:18.338 00.001 3216 ASCOM Scope: Connecting
+08:50:18.338 00.000 3216 Create ASCOM Scope: choice 'ASCOM Telescope Driver for TheSky.' progid ASCOM.SoftwareBisque.Telescope
+08:50:21.331 00.001 3216 ASCOM scope CanSlewAsync is true
+08:50:21.763 00.187 3216 ScopeASCOM::SideOfPier() returns 1
+08:50:21.764 00.001 3216 ASCOM Scope: Connect success
+08:50:21.765 00.001 3216 Status Line: Mount Connected
+08:50:21.874 00.002 3216 ScopeASCOM::SideOfPier() returns 1
+08:50:22.149 00.001 3216 ScopeASCOM::SideOfPier() returns 1

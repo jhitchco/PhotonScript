@@ -1,0 +1,643 @@
+{
+ "_source": "read-only GETs of the scope PC on 2026-10-14 ~22:55 MDT (NINA #1 :1888 / NINA #2 :1889 /v2/api/event-history, /api/runs/2026-10-14), trimmed to 21:00-23:30 local. The saved plan is the 22:41 restart's; its window start is set to the 22:19:17 dispatch (same target).",
+ "date": "2026-10-14",
+ "plan": {
+  "night_of": "2026-10-14",
+  "saved_at": "2026-10-15T04:41:17.308804Z",
+  "dusk_utc": "2026-10-15T02:05:43.718608Z",
+  "dawn_utc": "2026-10-15T12:00:54.271361Z",
+  "piggy_length": {
+   "base_s": 450.0,
+   "cap_s": null,
+   "core_mode": "advise",
+   "targets": [
+    {
+     "target": "NGC 604",
+     "exp_s": 450.0,
+     "source": "default",
+     "until_utc": null
+    }
+   ],
+   "segments": [],
+   "single_s": 450.0,
+   "changed": false
+  },
+  "targets": [
+   {
+    "name": "NGC 604",
+    "window_start_utc": "2026-10-15T04:19:17Z",
+    "window_end_utc": "2026-10-15T11:35:16Z",
+    "guided": false,
+    "unguided_filters": [],
+    "exposures": [
+     {
+      "filter": "L",
+      "exp_s": 120.0,
+      "planned": 48
+     },
+     {
+      "filter": "R",
+      "exp_s": 120.0,
+      "planned": 24
+     },
+     {
+      "filter": "G",
+      "exp_s": 120.0,
+      "planned": 24
+     },
+     {
+      "filter": "B",
+      "exp_s": 120.0,
+      "planned": 24
+     }
+    ]
+   }
+  ]
+ },
+ "subs": [
+  {
+   "rig": "rc16",
+   "file": "LIGHT/2026-10-14_22-44-52_NGC 604_L_120.00s_0000.fits",
+   "time": "2026-10-15T04:47:09.134649Z",
+   "start_utc": "2026-10-15T04:44:52Z",
+   "end_utc": "2026-10-15T04:46:52Z",
+   "target": "NGC 604",
+   "filter": "L",
+   "exp_s": 120.0,
+   "hfr": 7.78,
+   "ecc": 0.575,
+   "stars": 400,
+   "guide_state": "lost_star",
+   "passed_qa": true
+  },
+  {
+   "rig": "rc16",
+   "file": "LIGHT/2026-10-14_22-46-53_NGC 604_L_120.00s_0001.fits",
+   "time": "2026-10-15T04:49:04.294152Z",
+   "start_utc": "2026-10-15T04:46:53Z",
+   "end_utc": "2026-10-15T04:48:53Z",
+   "target": "NGC 604",
+   "filter": "L",
+   "exp_s": 120.0,
+   "hfr": 7.71,
+   "ecc": 0.557,
+   "stars": 400,
+   "guide_state": "lost_star",
+   "passed_qa": true
+  },
+  {
+   "rig": "piggyback",
+   "file": "LIGHT/2026-10-14_22-42-45__0.00_450.00s_0000.fits",
+   "time": "2026-10-15T04:50:29.496973Z",
+   "start_utc": "2026-10-15T04:42:45Z",
+   "end_utc": "2026-10-15T04:50:15Z",
+   "target": "NGC 604",
+   "filter": "OSC",
+   "exp_s": 450.0,
+   "hfr": 3.3,
+   "ecc": 0.446,
+   "stars": 400,
+   "guide_state": "lost_star",
+   "passed_qa": false
+  },
+  {
+   "rig": "rc16",
+   "file": "LIGHT/2026-10-14_22-48-54_NGC 604_L_120.00s_0002.fits",
+   "time": "2026-10-15T04:51:05.405214Z",
+   "start_utc": "2026-10-15T04:48:54Z",
+   "end_utc": "2026-10-15T04:50:54Z",
+   "target": "NGC 604",
+   "filter": "L",
+   "exp_s": 120.0,
+   "hfr": 7.31,
+   "ecc": 0.487,
+   "stars": 400,
+   "guide_state": "lost_star",
+   "passed_qa": true
+  },
+  {
+   "rig": "rc16",
+   "file": "LIGHT/2026-10-14_22-50-55_NGC 604_L_120.00s_0003.fits",
+   "time": "2026-10-15T04:53:06.508265Z",
+   "start_utc": "2026-10-15T04:50:55Z",
+   "end_utc": "2026-10-15T04:52:55Z",
+   "target": "NGC 604",
+   "filter": "L",
+   "exp_s": 120.0,
+   "hfr": 7.38,
+   "ecc": 0.52,
+   "stars": 400,
+   "guide_state": "lost_star",
+   "passed_qa": true
+  },
+  {
+   "rig": "rc16",
+   "file": "LIGHT/2026-10-14_22-52-56_NGC 604_L_120.00s_0004.fits",
+   "time": "2026-10-15T04:55:07.345461Z",
+   "start_utc": "2026-10-15T04:52:56Z",
+   "end_utc": "2026-10-15T04:54:56Z",
+   "target": "NGC 604",
+   "filter": "L",
+   "exp_s": 120.0,
+   "hfr": 7.38,
+   "ecc": 0.584,
+   "stars": 400,
+   "guide_state": "lost_star",
+   "passed_qa": true
+  }
+ ],
+ "nina_events": {
+  "rc16": [
+   {
+    "Time": "2026-10-14T22:12:25.4534168-06:00",
+    "Event": "SAFETY-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:12:28.0723966-06:00",
+    "Event": "SAFETY-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:12:47.2879995-06:00",
+    "Event": "CAMERA-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:12:47.8824594-06:00",
+    "Event": "CAMERA-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:13:01.0744836-06:00",
+    "Event": "MOUNT-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:18:22.6700685-06:00",
+    "Event": "MOUNT-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:18:24.3396183-06:00",
+    "Event": "MOUNT-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:18:46.701875-06:00",
+    "Event": "MOUNT-PARKED"
+   },
+   {
+    "Time": "2026-10-14T22:19:17.1470174-06:00",
+    "Event": "FILTERWHEEL-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:17.4380235-06:00",
+    "Event": "FILTERWHEEL-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:17.4835899-06:00",
+    "Event": "SEQUENCE-STARTING"
+   },
+   {
+    "Time": "2026-10-14T22:19:21.6079461-06:00",
+    "Event": "FOCUSER-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:22.3539015-06:00",
+    "Event": "FOCUSER-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:22.7898786-06:00",
+    "Event": "FOCUSER-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:23.2174048-06:00",
+    "Event": "FOCUSER-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:26.0267191-06:00",
+    "Event": "WEATHER-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:19:26.1537671-06:00",
+    "Event": "WEATHER-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:20:58.5531914-06:00",
+    "Event": "GUIDER-CONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:20:58.9873534-06:00",
+    "Event": "MOUNT-UNPARKED"
+   },
+   {
+    "Time": "2026-10-14T22:20:59.2970915-06:00",
+    "Event": "MOUNT-UNPARKED"
+   },
+   {
+    "Time": "2026-10-14T22:21:11.0278656-06:00",
+    "Event": "GUIDER-DISCONNECTED"
+   },
+   {
+    "Time": "2026-10-14T22:21:49.395338-06:00",
+    "Event": "AUTOFOCUS-STARTING"
+   },
+   {
+    "Time": "2026-10-14T22:22:21.3811707-06:00",
+    "HFR": 12.369484973568706,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6159
+   },
+   {
+    "Time": "2026-10-14T22:22:39.3759573-06:00",
+    "HFR": 11.065848667019473,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6049
+   },
+   {
+    "Time": "2026-10-14T22:22:57.4972721-06:00",
+    "HFR": 7.991172934723259,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5939
+   },
+   {
+    "Time": "2026-10-14T22:23:15.4272403-06:00",
+    "HFR": 7.763312330614825,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5829
+   },
+   {
+    "Time": "2026-10-14T22:23:35.366447-06:00",
+    "HFR": 7.1340724085487395,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5719
+   },
+   {
+    "Time": "2026-10-14T22:23:55.422735-06:00",
+    "HFR": 8.293360267588215,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5609
+   },
+   {
+    "Time": "2026-10-14T22:24:15.3525282-06:00",
+    "HFR": 9.785227172842966,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5499
+   },
+   {
+    "Time": "2026-10-14T22:24:33.296689-06:00",
+    "HFR": 13.586379654077419,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5389
+   },
+   {
+    "Time": "2026-10-14T22:24:51.3281243-06:00",
+    "HFR": 15.43182634939133,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5279
+   },
+   {
+    "Time": "2026-10-14T22:25:09.3282928-06:00",
+    "Event": "AUTOFOCUS-FINISHED"
+   },
+   {
+    "Time": "2026-10-14T22:25:09.4002",
+    "Event": "MOUNT-CENTER"
+   },
+   {
+    "Time": "2026-10-14T22:26:44.5984908-06:00",
+    "Event": "MOUNT-PARKED"
+   },
+   {
+    "Time": "2026-10-14T22:26:44.8158839-06:00",
+    "Event": "MOUNT-PARKED"
+   },
+   {
+    "Time": "2026-10-14T22:28:51.6699578-06:00",
+    "Event": "MOUNT-UNPARKED"
+   },
+   {
+    "Time": "2026-10-14T22:29:33.3418563-06:00",
+    "Event": "AUTOFOCUS-STARTING"
+   },
+   {
+    "Time": "2026-10-14T22:30:05.4442651-06:00",
+    "HFR": 12.35214166144013,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6159
+   },
+   {
+    "Time": "2026-10-14T22:30:23.3672317-06:00",
+    "HFR": 9.630338546950092,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6049
+   },
+   {
+    "Time": "2026-10-14T22:30:41.4106016-06:00",
+    "HFR": 7.743796954143498,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5939
+   },
+   {
+    "Time": "2026-10-14T22:30:59.4146346-06:00",
+    "HFR": 6.403414783475071,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5829
+   },
+   {
+    "Time": "2026-10-14T22:31:19.4228152-06:00",
+    "HFR": 6.188253575893848,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5719
+   },
+   {
+    "Time": "2026-10-14T22:31:39.4073395-06:00",
+    "HFR": 7.496938522504955,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5609
+   },
+   {
+    "Time": "2026-10-14T22:31:59.4020206-06:00",
+    "HFR": 10.551493412715782,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5499
+   },
+   {
+    "Time": "2026-10-14T22:32:17.4041923-06:00",
+    "HFR": 12.778056483350696,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5389
+   },
+   {
+    "Time": "2026-10-14T22:32:35.421089-06:00",
+    "HFR": 15.415023781842724,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5279
+   },
+   {
+    "Time": "2026-10-14T22:32:53.4592589-06:00",
+    "Event": "AUTOFOCUS-FINISHED"
+   },
+   {
+    "Time": "2026-10-14T22:32:53.5286",
+    "Event": "MOUNT-CENTER"
+   },
+   {
+    "Time": "2026-10-14T22:34:28.5719269-06:00",
+    "Event": "MOUNT-PARKED"
+   },
+   {
+    "Time": "2026-10-14T22:34:28.7775301-06:00",
+    "Event": "MOUNT-PARKED"
+   },
+   {
+    "Time": "2026-10-14T22:35:00.795982-06:00",
+    "Event": "MOUNT-UNPARKED"
+   },
+   {
+    "Time": "2026-10-14T22:35:43.3063053-06:00",
+    "Event": "AUTOFOCUS-STARTING"
+   },
+   {
+    "Time": "2026-10-14T22:36:15.2758435-06:00",
+    "HFR": 12.507483233660633,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6159
+   },
+   {
+    "Time": "2026-10-14T22:36:33.2761974-06:00",
+    "HFR": 10.395717529969945,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6049
+   },
+   {
+    "Time": "2026-10-14T22:36:51.2638535-06:00",
+    "HFR": 8.141046542316884,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5939
+   },
+   {
+    "Time": "2026-10-14T22:37:09.2577189-06:00",
+    "HFR": 6.757696002424803,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5829
+   },
+   {
+    "Time": "2026-10-14T22:37:27.2587106-06:00",
+    "HFR": 6.637222763243724,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5719
+   },
+   {
+    "Time": "2026-10-14T22:37:45.2808027-06:00",
+    "HFR": 7.8751468051727045,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5609
+   },
+   {
+    "Time": "2026-10-14T22:38:03.279373-06:00",
+    "HFR": 9.575368327095015,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5499
+   },
+   {
+    "Time": "2026-10-14T22:38:21.3235133-06:00",
+    "HFR": 13.012965130357692,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5389
+   },
+   {
+    "Time": "2026-10-14T22:38:39.3822029-06:00",
+    "HFR": 15.442444771837241,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5279
+   },
+   {
+    "Time": "2026-10-14T22:38:57.4003167-06:00",
+    "Event": "AUTOFOCUS-FINISHED"
+   },
+   {
+    "Time": "2026-10-14T22:38:57.4925",
+    "Event": "MOUNT-CENTER"
+   },
+   {
+    "Time": "2026-10-14T22:41:16.3295475-06:00",
+    "Event": "SEQUENCE-FINISHED"
+   },
+   {
+    "Time": "2026-10-14T22:41:21.6525626-06:00",
+    "Event": "SEQUENCE-STARTING"
+   },
+   {
+    "Time": "2026-10-14T22:41:22.4906205-06:00",
+    "Event": "MOUNT-UNPARKED"
+   },
+   {
+    "Time": "2026-10-14T22:41:22.7495348-06:00",
+    "Event": "MOUNT-UNPARKED"
+   },
+   {
+    "Time": "2026-10-14T22:41:51.3114709-06:00",
+    "Event": "AUTOFOCUS-STARTING"
+   },
+   {
+    "Time": "2026-10-14T22:42:23.2395033-06:00",
+    "HFR": 13.183918138433311,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6193
+   },
+   {
+    "Time": "2026-10-14T22:42:41.2626751-06:00",
+    "HFR": 10.544347451600267,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 6083
+   },
+   {
+    "Time": "2026-10-14T22:42:59.305919-06:00",
+    "HFR": 8.248286505819486,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5973
+   },
+   {
+    "Time": "2026-10-14T22:43:17.2658694-06:00",
+    "HFR": 6.389349872376334,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Position": 5863
+   },
+   {
+    "Time": "2026-10-14T22:43:35.2767",
+    "Event": "MOUNT-CENTER"
+   },
+   {
+    "Time": "2026-10-14T22:43:40.4751729-06:00",
+    "Event": "FOCUSER-USER-FOCUSED"
+   },
+   {
+    "Event": "IMAGE-SAVE",
+    "Time": "2026-10-14T22:46:55.1001403-06:00"
+   },
+   {
+    "Event": "IMAGE-SAVE",
+    "Time": "2026-10-14T22:48:56.1088772-06:00"
+   },
+   {
+    "Event": "IMAGE-SAVE",
+    "Time": "2026-10-14T22:50:56.8093952-06:00"
+   },
+   {
+    "Event": "IMAGE-SAVE",
+    "Time": "2026-10-14T22:52:57.6222932-06:00"
+   },
+   {
+    "Event": "IMAGE-SAVE",
+    "Time": "2026-10-14T22:54:58.5869536-06:00"
+   }
+  ],
+  "piggyback": [
+   {
+    "Event": "CAMERA-DISCONNECTED",
+    "Time": "2026-10-14T22:12:31.5181724-06:00"
+   },
+   {
+    "Event": "CAMERA-CONNECTED",
+    "Time": "2026-10-14T22:12:32.4255387-06:00"
+   },
+   {
+    "Event": "FOCUSER-DISCONNECTED",
+    "Time": "2026-10-14T22:12:36.1043768-06:00"
+   },
+   {
+    "Event": "FOCUSER-CONNECTED",
+    "Time": "2026-10-14T22:12:38.9870266-06:00"
+   },
+   {
+    "Event": "SAFETY-DISCONNECTED",
+    "Time": "2026-10-14T22:13:15.3088799-06:00"
+   },
+   {
+    "Event": "SAFETY-CONNECTED",
+    "Time": "2026-10-14T22:13:15.3716407-06:00"
+   },
+   {
+    "Event": "SEQUENCE-STARTING",
+    "Time": "2026-10-14T22:19:26.2128848-06:00"
+   },
+   {
+    "Event": "AUTOFOCUS-STARTING",
+    "Time": "2026-10-14T22:40:23.1388643-06:00"
+   },
+   {
+    "Position": 11302,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:40:39.0354055-06:00",
+    "HFR": 9.97656268377466
+   },
+   {
+    "Position": 11252,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:40:49.0411398-06:00",
+    "HFR": 9.84457504134706
+   },
+   {
+    "Position": 11202,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:40:59.0651714-06:00",
+    "HFR": 8.46701220006601
+   },
+   {
+    "Position": 11152,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:41:09.0552372-06:00",
+    "HFR": 6.266258930830411
+   },
+   {
+    "Position": 11102,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:41:16.8128497-06:00",
+    "HFR": 4.514634415895819
+   },
+   {
+    "Position": 11052,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:41:28.6294107-06:00",
+    "HFR": 3.5235847014653077
+   },
+   {
+    "Position": 11002,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:41:40.8259322-06:00",
+    "HFR": 3.3102824322425963
+   },
+   {
+    "Position": 10952,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:41:52.6654304-06:00",
+    "HFR": 3.858028188778661
+   },
+   {
+    "Position": 10902,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:42:04.6831994-06:00",
+    "HFR": 5.009595080036363
+   },
+   {
+    "Position": 10852,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:42:17.0405549-06:00",
+    "HFR": 7.031864224364228
+   },
+   {
+    "Position": 10802,
+    "Event": "AUTOFOCUS-POINT-ADDED",
+    "Time": "2026-10-14T22:42:30.7667343-06:00",
+    "HFR": 9.23332350310707
+   },
+   {
+    "Event": "AUTOFOCUS-FINISHED",
+    "Time": "2026-10-14T22:42:43.0631053-06:00"
+   },
+   {
+    "Event": "FILTERWHEEL-DISCONNECTED",
+    "Time": "2026-10-14T22:42:43.0658027-06:00"
+   },
+   {
+    "Event": "IMAGE-SAVE",
+    "Time": "2026-10-14T22:50:18.9889596-06:00"
+   }
+  ]
+ }
+}

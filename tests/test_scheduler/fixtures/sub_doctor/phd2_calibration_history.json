@@ -1,0 +1,524 @@
+{
+"source": "GET /api/phd2/calibration history, 2026-10-13",
+"history": [
+{
+"t_utc": "2026-10-05T12:13:29Z",
+"night": "2026-10-04",
+"grade": "FAIL",
+"reasons": [
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-05T12:40:00Z",
+"night": "2026-10-04",
+"grade": "FAIL",
+"reasons": [
+"RA/Dec rate ratio 1.72x of cos(Dec) (tolerance 30%)"
+],
+"dec_deg": 56.6,
+"ha_hr": -6.32,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-05T12:46:40Z",
+"night": "2026-10-04",
+"grade": "FAIL",
+"reasons": [
+"RA/Dec rate ratio 1.72x of cos(Dec) (tolerance 30%)"
+],
+"dec_deg": 56.6,
+"ha_hr": -6.32,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-05T14:50:22Z",
+"night": "2026-10-04",
+"grade": "FAIL",
+"reasons": [
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-06T03:07:40Z",
+"night": "2026-10-05",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -6.31,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-06T03:21:17Z",
+"night": "2026-10-05",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -6.31,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-06T03:51:38Z",
+"night": "2026-10-05",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": 0.99,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-06T04:12:46Z",
+"night": "2026-10-05",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": 1.39,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-06T04:59:22Z",
+"night": "2026-10-05",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -3.87,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-06T14:28:14Z",
+"night": "2026-10-05",
+"grade": "PASS",
+"reasons": [],
+"dec_deg": 0.0,
+"ha_hr": 0.0,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-06T16:58:36Z",
+"night": "2026-10-05",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 89.5,
+"ha_hr": -6.43,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-06T19:31:55Z",
+"night": "2026-10-06",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -6.43,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-08T01:11:16Z",
+"night": "2026-10-07",
+"grade": "PASS",
+"reasons": [],
+"dec_deg": 0.0,
+"ha_hr": 0.0,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-08T15:47:20Z",
+"night": "2026-10-07",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -6.42,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-08T18:16:15Z",
+"night": "2026-10-08",
+"grade": "FAIL",
+"reasons": [
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-08T19:25:21Z",
+"night": "2026-10-08",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -6.42,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-08T19:25:44Z",
+"night": "2026-10-08",
+"grade": "WARN",
+"reasons": [],
+"dec_deg": 56.6,
+"ha_hr": -6.42,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-08T20:02:09Z",
+"night": "2026-10-08",
+"grade": "PASS",
+"reasons": [],
+"dec_deg": 0.0,
+"ha_hr": 0.0,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-08T20:57:53Z",
+"night": "2026-10-08",
+"grade": "PASS",
+"reasons": [],
+"dec_deg": 0.0,
+"ha_hr": 0.0,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-10T02:27:16Z",
+"night": "2026-10-09",
+"grade": "FAIL",
+"reasons": [
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-10T02:42:42Z",
+"night": "2026-10-09",
+"grade": "FAIL",
+"reasons": [
+"Dec parity - differs from the last good calibration on the West side (+)",
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-10T13:11:37Z",
+"night": "2026-10-09",
+"grade": "FAIL",
+"reasons": [
+"Dec parity - differs from the last good calibration on the West side (+)"
+],
+"dec_deg": 56.6,
+"ha_hr": -6.55,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-11T20:06:18Z",
+"night": "2026-10-11",
+"grade": "PASS",
+"reasons": [],
+"dec_deg": 0.0,
+"ha_hr": 0.0,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-12T03:49:21Z",
+"night": "2026-10-11",
+"grade": "FAIL",
+"reasons": [
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-12T04:42:52Z",
+"night": "2026-10-11",
+"grade": "FAIL",
+"reasons": [
+"Dec parity - differs from the last good calibration on the West side (+)",
+"too few steps to measure the axis (North 2; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 105 ms"
+],
+"dec_deg": 56.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-12T18:02:03Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"RA/Dec rate ratio 1.45x of cos(Dec) (tolerance 30%)",
+"Dec parity - differs from the last good calibration on the West side (+)"
+],
+"dec_deg": 56.6,
+"ha_hr": -1.43,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-12T19:22:30Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"RA/Dec rate ratio 1.45x of cos(Dec) (tolerance 30%)",
+"Dec parity - differs from the last good calibration on the West side (+)"
+],
+"dec_deg": 56.6,
+"ha_hr": -1.43,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-12T21:22:04Z",
+"night": "2026-10-12",
+"grade": "PASS",
+"reasons": [],
+"dec_deg": 0.0,
+"ha_hr": 0.0,
+"context": "other",
+"pier_side": "East"
+},
+{
+"t_utc": "2026-10-13T00:09:40Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"RA/Dec rate ratio 1.45x of cos(Dec) (tolerance 30%)",
+"Dec parity - differs from the last good calibration on the West side (+)"
+],
+"dec_deg": 56.6,
+"ha_hr": -6.49,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T02:00:33Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"axes 37.7 deg from perpendicular (max 5)",
+"too few steps to measure the axis (West 0, North 0; at least 3, PHD2 aims for about 12)"
+],
+"dec_deg": 7.5,
+"ha_hr": -0.41,
+"context": "plan",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T02:02:40Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"axes 42.8 deg from perpendicular (max 5)",
+"RA/Dec rate ratio 0.54x of cos(Dec) (tolerance 30%)",
+"too few steps to measure the axis (West 1, North 0; at least 3, PHD2 aims for about 12): set PHD2 Calibration Step to about 5 ms"
+],
+"dec_deg": 7.5,
+"ha_hr": -0.38,
+"context": "retry",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:14:02Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)",
+"star moved only 0.5 px in 13 West steps (pulses not reaching the mount, or a hot pixel)"
+],
+"dec_deg": 5.1,
+"ha_hr": -0.67,
+"context": "plan",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:17:44Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)",
+"star moved only 0.7 px in 24 West steps (pulses not reaching the mount, or a hot pixel)"
+],
+"dec_deg": 5.1,
+"ha_hr": -0.6,
+"context": "retry",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:22:36Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 5.1,
+"ha_hr": -0.64,
+"context": "plan",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:23:13Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": -0.0,
+"ha_hr": -0.32,
+"context": "retry",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:28:55Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)",
+"star moved only 2.4 px in 59 West steps (pulses not reaching the mount, or a hot pixel)"
+],
+"dec_deg": 5.1,
+"ha_hr": -0.54,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:35:07Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"axes 7.2 deg from perpendicular (max 5)"
+],
+"dec_deg": 5.1,
+"ha_hr": -0.43,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:37:53Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 60.8,
+"ha_hr": -4.44,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:38:59Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 61.6,
+"ha_hr": -4.75,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:43:00Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 61.6,
+"ha_hr": -4.68,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:44:39Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 61.6,
+"ha_hr": -4.65,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:47:38Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 61.6,
+"ha_hr": -4.6,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:48:01Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"calibration failed (Calibration manually stopped)"
+],
+"dec_deg": 61.6,
+"ha_hr": -4.61,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T03:53:42Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"axes 78 deg from perpendicular (max 5)"
+],
+"dec_deg": 61.6,
+"ha_hr": -4.51,
+"context": "other",
+"pier_side": "West"
+},
+{
+"t_utc": "2026-10-13T08:32:40Z",
+"night": "2026-10-12",
+"grade": "FAIL",
+"reasons": [
+"axes 77.97 deg from perpendicular (max 5)"
+],
+"dec_deg": 61.6,
+"ha_hr": null,
+"context": "registry",
+"pier_side": "East"
+}
+]
+}
