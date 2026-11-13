@@ -735,13 +735,13 @@ async function loadAlt() {
     const s = AltChart.summary(d);
     const parts = [];
     if (s.now_alt != null)
-        parts.push('<b>' + (s.now_alt > 0 ? 'now ' + s.now_alt + '° up'
+        parts.push('<b>' + (s.now_alt > 0 ? 'now ' + s.now_alt + '&deg; up'
                                           : 'below the horizon now') + '</b>');
-    parts.push('transit ' + s.transit_local + ' at ' + s.transit_alt + '°');
-    if (s.never_up) parts.push('never above 30° tonight');
-    else if (s.always_up) parts.push('above 30° all night');
-    else parts.push('above 30° ' + (s.up_from || 'until') + ' – ' + (s.up_to || 'dawn'));
-    document.getElementById('tAltLine').innerHTML = parts.join(' · ');
+    parts.push('transit ' + s.transit_local + ' at ' + s.transit_alt + '&deg;');
+    if (s.never_up) parts.push('never above 30&deg; tonight');
+    else if (s.always_up) parts.push('above 30&deg; all night');
+    else parts.push('above 30&deg; ' + (s.up_from || 'until') + ' &ndash; ' + (s.up_to || 'dawn'));
+    document.getElementById('tAltLine').innerHTML = parts.join(' &middot; ');
     document.getElementById('tAlt').innerHTML = altChartSVG(d, {fluid: true, nowDot: true});
     document.getElementById('altPanel').hidden = false;
     if (!altTimer) altTimer = setInterval(() => { if (!document.hidden) loadAlt(); }, 300000);
