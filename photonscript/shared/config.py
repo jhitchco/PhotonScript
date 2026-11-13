@@ -279,6 +279,16 @@ class PhotonScriptConfig(BaseSettings):
     nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0
+    # PS-254 after-action report: one page per night (card text, timeline
+    # image, a few thumbnails, contact-sheet links), sent after dawn.
+    after_action_mode: str = "push"  # push | email | both | off
+    after_action_after_shutdown_min: float = 40.0
+    after_action_base_url: str = "https://teles-feb25.lobster-bleak.ts.net"
+    after_action_smtp_host: str = "smtp.gmail.com"
+    after_action_smtp_port: int = 587
+    after_action_smtp_user: str = ""
+    after_action_smtp_password: str = ""
+    after_action_email_to: str = ""
     # PS-252 mount truth ledger: TheSky's own position / site / clock, the
     # mapping error at every NINA Center, ImagingSystem.ini changes.
     mount_ledger_mode: str = "alert"  # alert | observe | off (reads only)

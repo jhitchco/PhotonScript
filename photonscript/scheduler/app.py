@@ -716,6 +716,14 @@ async def _start_mount_ledger():
 
 
 @app.on_event("startup")
+async def _start_after_action():
+    """PS-254: one after-action report per night after the dawn shutdown
+    (push / email per after_action_mode). Idle when off."""
+    from photonscript.scheduler.after_action import run_loop
+    _spawn(run_loop(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_tpoint_watch():
     """TPoint run watcher: a calibration run's progress, its finish (one
     push), the fitted-model history and the unguided limits epoch. Reads
@@ -935,6 +943,14 @@ _CONFIG_FIELDS = [
     ("nina_watch_idle_restart", "PS_NINA_WATCH_IDLE_RESTART", "NINA watchdog: on IDLE WHILE ARMED, ask the night pilot for Restart tonight from now once per night (off by default; needs night_pilot_mode act)", "Nanny / Alerts", "bool", False, False),
     ("dawn_mount_check_mode", "PS_DAWN_MOUNT_CHECK_MODE", "Dawn mount check (PS-185): alert = one priority page when the mount is unparked and tracking after astro dawn with no armed night or NINA #1 sequence (runs when DISARMED too) | off; never parks", "Nanny / Alerts", "str", False, False),
     ("dawn_mount_check_after_dawn_min", "PS_DAWN_MOUNT_CHECK_AFTER_DAWN_MIN", "Dawn mount check: start checking this many minutes after astro dawn", "Nanny / Alerts", "float", False, False),
+    ("after_action_mode", "PS_AFTER_ACTION_MODE", "After-action report (PS-254): push = one Pushover with the night timeline and the report link after the dawn shutdown | email = the full report (card, timeline, thumbnails, contact-sheet links) by SMTP | both | off. Page: /report/<night>", "Nanny / Alerts", "str", False, False),
+    ("after_action_after_shutdown_min", "PS_AFTER_ACTION_AFTER_SHUTDOWN_MIN", "After-action report: send this many minutes after the dawn shutdown", "Nanny / Alerts", "float", False, False),
+    ("after_action_base_url", "PS_AFTER_ACTION_BASE_URL", "After-action report: dashboard address used in the report link (Tailscale name)", "Nanny / Alerts", "str", False, False),
+    ("after_action_smtp_host", "PS_AFTER_ACTION_SMTP_HOST", "After-action email: SMTP server (Gmail: smtp.gmail.com)", "Nanny / Alerts", "str", False, False),
+    ("after_action_smtp_port", "PS_AFTER_ACTION_SMTP_PORT", "After-action email: SMTP port (STARTTLS; Gmail 587)", "Nanny / Alerts", "int", False, False),
+    ("after_action_smtp_user", "PS_AFTER_ACTION_SMTP_USER", "After-action email: SMTP login (the sending Gmail address)", "Nanny / Alerts", "str", False, False),
+    ("after_action_smtp_password", "PS_AFTER_ACTION_SMTP_PASSWORD", "After-action email: SMTP password (Gmail: a Google app password)", "Nanny / Alerts", "str", True, False),
+    ("after_action_email_to", "PS_AFTER_ACTION_EMAIL_TO", "After-action email: recipient address", "Nanny / Alerts", "str", False, False),
     ("mount_ledger_mode", "PS_MOUNT_LEDGER_MODE", "Mount truth ledger (PS-252): TheSky's own position, site, time zone and clock, the mapping error at every NINA Center, ImagingSystem.ini changes, to mount/<night>_ledger.jsonl. alert = also one push per incident (mapping jump, slew error, site / clock change) | observe = ledger only | off. Reads only", "Nanny / Alerts", "str", False, False),
     ("mount_ledger_poll_s", "PS_MOUNT_LEDGER_POLL_S", "Mount truth ledger: TheSky read every N s (every 10 min while parked)", "Nanny / Alerts", "float", False, False),
     ("mount_ledger_slew_poll_s", "PS_MOUNT_LEDGER_SLEW_POLL_S", "Mount truth ledger: TheSky read every N s while a slew is in progress", "Nanny / Alerts", "float", False, False),
@@ -3818,6 +3834,8 @@ from photonscript.scheduler.routers import targets as _targets_router  # noqa: E
 app.include_router(_targets_router.router)
 from photonscript.scheduler.routers import pointing as _pointing_router  # noqa: E402
 app.include_router(_pointing_router.router)
+from photonscript.scheduler.routers import report as _report_router  # noqa: E402
+app.include_router(_report_router.router)
 from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
 app.include_router(_calibration_router.router)
 from photonscript.scheduler.routers import rotation as _rotation_router  # noqa: E402
