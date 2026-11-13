@@ -103,19 +103,24 @@ if ($LASTEXITCODE -ne 0) {
 if (-not $SkipTests) {
     Write-Host "Pre-deploy checks (pytest, ruff)...  (-SkipTests to bypass)"
     Push-Location $repo
+    # 2026-11-12: use the repo's own venv when it has one. The system python
+    # on the desktop has no pytest, so the gate was silently skipped.
+    $py = Join-Path $repo ".venv\Scripts\python.exe"
+    if (-not (Test-Path $py)) { $py = "python" }
+    Write-Host "Test gate python: $py"
     try {
-        python -m pytest --version *> $null
+        & $py -m pytest --version *> $null
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "pytest not installed here - SKIPPING the test gate. To enable it: python -m pip install pytest pytest-asyncio ruff scipy  (or set up CI)."
+            Write-Warning "pytest not installed for $py - SKIPPING the test gate. To enable it: & '$py' -m pip install pytest pytest-asyncio ruff scipy  (or set up CI)."
         } else {
-            python -m pytest -q
+            & $py -m pytest -q
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "pytest FAILED - not deploying. Fix the tests, or rerun with -SkipTests." -ForegroundColor Red
                 Pop-Location; exit 1
             }
-            python -m ruff --version *> $null
+            & $py -m ruff --version *> $null
             if ($LASTEXITCODE -eq 0) {
-                python -m ruff check photonscript 2>&1 | Out-Host
+                & $py -m ruff check photonscript 2>&1 | Out-Host
                 if ($LASTEXITCODE -ne 0) {
                     Write-Warning "ruff reported lint issues (not blocking) - consider cleaning them up."
                 }
