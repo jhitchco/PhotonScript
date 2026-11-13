@@ -36,7 +36,7 @@ def test_deploy_refuses_dirty_tree_before_anything_else():
     i_status = s.index("git -C $repo status --porcelain")
     i_refuse = s.index("if (-not $IncludeWorkingTree)")
     i_pull = s.index("git -C $repo pull --rebase=merges origin main")
-    i_tests = s.index("python -m pytest -q")
+    i_tests = s.index("& $py -m pytest -q")   # the repo .venv python (2026-11-13)
     i_push = s.index("git -C $repo push origin HEAD:main")
     i_post = s.index('"$Scope/api/update"')
     assert i_status < i_refuse < i_pull < i_tests < i_push < i_post

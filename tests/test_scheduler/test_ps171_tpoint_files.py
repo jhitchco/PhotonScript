@@ -41,7 +41,10 @@ def _tree(tmp_path) -> Path:
         encoding="ascii").replace("01 15 45.00", "XX"), encoding="ascii")
     os.utime(old, (time.time() - 86400 * 30, time.time() - 86400 * 30))
     for f in FIX.glob("documented-format_*"):
-        shutil.copy2(f, tp / f.name)
+        # copy, not copy2: the fixtures must be newer than old_run.dat. copy2
+        # kept the checkout's mtime, so a checkout older than 30 days made
+        # old_run.dat the "newest" file (2026-11-13: 7 failures).
+        shutil.copy(f, tp / f.name)
     auto = root / "Camera AutoSave" / "Imager" / "Automated Pointing Run 001"
     auto.mkdir(parents=True)
     (auto / "TPoint_0001.fit").write_bytes(b"SIMPLE  =" + b"\x00" * 100)
