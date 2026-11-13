@@ -54,11 +54,24 @@ def test_pick_thumbs_best_kept_per_target_and_one_typical_reject_per_rig():
     assert "FWHM" in rej[0]["why"] and "(3 total)" in rej[0]["why"]
 
 
-def test_timeline_png_draws_rows_and_subs(tmp_path):
-    png = aa.timeline_png(_cfg(tmp_path), "2026-11-11", tl=TL, subs=SUBS)
-    im = Image.open(io.BytesIO(png))
-    assert im.format == "PNG" and im.width == 1400
-    assert im.height > 46 + 4 * 34          # mount, rc16 + two sub rows
+def test_timeline_png_one_bar_per_rig_with_subs_painted_on(tmp_path):
+    # a date with no sunset / sunrise: the window is the timeline's own t0..t1
+    png = aa.timeline_png(_cfg(tmp_path), "no-date", tl=TL, subs=SUBS)
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    assert im.width == 1400
+    # mount, rc16, then a Piggy-600 bar (it has subs but no activity row):
+    # three bars, no separate "subs" rows
+    assert im.height == 46 + 3 * 34 + 60
+    t0, t1 = T0 - timedelta(minutes=0), T0 + timedelta(hours=10)
+    span = (t1 - t0).total_seconds()
+
+    def px(sub_i, row):   # centre pixel of sub i on bar `row`
+        a = T0 + timedelta(minutes=5 * sub_i + 1)
+        x = int(150 + (1400 - 150 - 20) * (a - t0).total_seconds() / span)
+        return im.getpixel((x, 46 + row * 34 + 13))
+    assert px(2, 1) == aa.STATE_COLORS["kept"]       # rc16 bar, kept sub
+    assert px(3, 1) == aa.STATE_COLORS["rejected"]   # rc16 bar, rejected sub
+    assert px(7, 2) == aa.STATE_COLORS["kept"]       # piggy bar
     assert aa.timeline_png(_cfg(tmp_path), "x", tl={"ok": False}, subs=[]) is None
 
 

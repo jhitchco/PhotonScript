@@ -47,7 +47,9 @@ THUMB_W = 360
 TICK_S = 300
 
 STATE_COLORS = {
-    "exposing": (46, 160, 90), "kept": (46, 160, 90), "rejected": (205, 70, 60),
+    # exposing = shutter open with no graded sub on top (test / calibration
+    # frames, or a sub still being graded); kept / rejected paint over it
+    "exposing": (98, 128, 108), "kept": (46, 160, 90), "rejected": (205, 70, 60),
     "slewing": (232, 150, 40), "centering": (230, 200, 60),
     "autofocus": (150, 100, 210), "meridian flip": (220, 60, 140),
     "parked": (120, 125, 135), "waiting": (80, 86, 98), "idle": (70, 76, 88),
@@ -144,16 +146,19 @@ def timeline_png(cfg, date: str, width: int = 1400, tl: dict | None = None,
         pass
     if not t0 or not t1 or t1 <= t0:
         return None
-    rows = [(r.get("label") or r.get("id"), r.get("segments") or [])
-            for r in tl.get("rows") or []]
     by_rig: dict[str, list] = {}
     for s in subs:
         a, b = _dt(s.get("start_utc")), _dt(s.get("end_utc"))
         if a and b:
             by_rig.setdefault(s.get("rig") or "rc16", []).append(
                 {"start": a, "end": b, "state": "kept" if _kept(s) else "rejected"})
+    # One bar per rig (Jeremy, 2026-11-13): the rig's activity, with each
+    # sub's exposure painted over it as kept (green) or rejected (red).
+    rows = [(r.get("label") or r.get("id"), r.get("segments") or [],
+             by_rig.pop(r.get("id"), []))
+            for r in tl.get("rows") or []]
     for rig, segs in sorted(by_rig.items()):
-        rows.append((f"{'RC16' if rig == 'rc16' else 'Piggy-600'} subs", segs))
+        rows.append(("RC16" if rig == "rc16" else "Piggy-600", [], segs))
     left, top, row_h, gap, right = 150, 46, 26, 8, 20
     height = top + len(rows) * (row_h + gap) + 60
     img = Image.new("RGB", (width, height), BG)
@@ -169,11 +174,11 @@ def timeline_png(cfg, date: str, width: int = 1400, tl: dict | None = None,
         d.line([(x, top - 6), (x, height - 40)], fill=GRID, width=1)
         d.text((x - 10, height - 34), h.strftime("%H"), fill=MUTED, font=f_small)
         h += timedelta(hours=1)
-    for i, (label, segs) in enumerate(rows):
+    for i, (label, segs, subs_over) in enumerate(rows):
         y = top + i * (row_h + gap)
         d.text((10, y + 4), str(label)[:18], fill=FG, font=f_lab)
         d.rectangle([left, y, width - right, y + row_h], fill=(30, 35, 44))
-        for s in segs:
+        for s in list(segs) + list(subs_over):   # subs last: on top
             a, b = _dt(s.get("start")), _dt(s.get("end"))
             if not a or not b or b <= t0 or a >= t1:
                 continue
@@ -181,7 +186,7 @@ def timeline_png(cfg, date: str, width: int = 1400, tl: dict | None = None,
             xa, xb = x_of(a), x_of(b)
             d.rectangle([xa, y + 2, max(xb, xa + 1), y + row_h - 2], fill=col)
     lx, ly = left, height - 18
-    for name in ("exposing", "kept", "rejected", "slewing", "centering", "autofocus",
+    for name in ("kept", "rejected", "exposing", "slewing", "centering", "autofocus",
                  "meridian flip", "parked", "waiting", "unsafe"):
         d.rectangle([lx, ly, lx + 10, ly + 10], fill=STATE_COLORS[name])
         d.text((lx + 14, ly - 2), name, fill=MUTED, font=f_small)
