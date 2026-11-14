@@ -207,7 +207,7 @@ def ledger_rows(rules: dict | None) -> list[dict]:
     return out
 
 
-def mount_rows(m: dict | None, der: dict | None) -> list[dict]:
+def mount_rows(m: dict | None, der: dict | None, idle: bool = False) -> list[dict]:
     if not m:
         return [row("Mount", "TheSky mount read", "fail", current="TheSky not answering on TCP",
                     fix="Open TheSky on the scope PC (or connect the mount in NINA #1, which "
@@ -221,9 +221,15 @@ def mount_rows(m: dict | None, der: dict | None) -> list[dict]:
                     "Manager, disable / enable the port (see the Windows rows). 'Cannot "
                     "slew' after connect: Bisque TCS > Utilities > Reboot")))
     if conn:
-        out.append(row("Mount", "Park state", "info",
+        loose = idle and not m.get("parked") and m.get("tracking")
+        out.append(row("Mount", "Park state", "warn" if loose else "info",
                        current=("parked" if m.get("parked") else "not parked") +
-                       (", tracking" if m.get("tracking") else ", not tracking")))
+                       (", tracking" if m.get("tracking") else ", not tracking"),
+                       want="parked or not tracking until the arm" if loose else None,
+                       fix=("Tracking by day with no session (PS-238: the Bisque driver's "
+                            "UnparkOnConnect unparks it when NINA connects). TheSky: "
+                            "Telescope > Tracking off, or park it; the arm unparks at dusk")
+                       if loose else None))
     for key, lim, label in (("clock_skew_s", 2.0, "TheSky clock vs PC (s)"),
                             ("lst_skew_s", 5.0, "TheSky LST vs computed (s)")):
         v = (der or {}).get(key)
@@ -269,6 +275,17 @@ def basics_rows(pf: dict | None) -> list[dict]:
     return out
 
 
+def camera_idle(info) -> tuple | None:
+    """("cooler off", temperature) for a connected camera whose cooler is
+    off (normal by day), None when not connected or no temperature."""
+    if not isinstance(info, dict) or info.get("Connected") is not True:
+        return None
+    t = info.get("Temperature")
+    if not isinstance(t, (int, float)) or t != t:
+        return None
+    return ("cooler off", float(t))
+
+
 def live_rows(reads: dict | None) -> list[dict]:
     out = []
     for rig, vals in (reads or {}).items():
@@ -280,6 +297,13 @@ def live_rows(reads: dict | None) -> list[dict]:
             v = vals.get(sensor)
             st = "pass" if v is not None else "warn"
             fix = None
+            if sensor == "camera" and isinstance(v, tuple) and v and v[0] == "cooler off":
+                t = v[1] if len(v) > 1 else None
+                out.append(row("Live readings", f"{rig} {sensor}", "pass",
+                               current=("connected, cooler off until the arm"
+                                        + (f" (sensor {t:.1f} C)" if isinstance(t, (int, float)) else "")),
+                               rid=f"live:{rig}:{sensor}"))
+                continue
             if v is None:
                 fix = (f"{rig} {sensor} reports no value: reconnect it in NINA "
                        f"({'#1' if rig == 'rc16' else '#2'}); a focuser with no temperature "
@@ -532,12 +556,20 @@ async def run(cfg, armer=None, trigger: str = "manual", push: bool | None = None
     for rig in rig_ids(cfg):
         r, err = await _guard(f"live {rig}", fs.read_rig(cfg, rig), 60)
         if err is None:
+            if r.get("camera") is None:
+                # frozen_sensor only judges a cooling camera; by day the
+                # cooler is off, so read it here (connected + temperature)
+                from photonscript.scheduler.nina_watchdog import _api_get, rig_base
+                info, _ = await _guard(f"camera {rig}", _api_get(rig_base(cfg, rig),
+                                                                 "/equipment/camera/info"), 30)
+                r["camera"] = camera_idle(info)
             reads[rig] = r
     rows += live_rows(reads)
 
     from photonscript.scheduler import mount_ledger as ml
     m, err = await _guard("mount", lambda: ml.read_thesky(cfg), 30)
-    rows += mount_rows(m, ml.derive(cfg, m, datetime.utcnow()) if m else None)
+    idle = getattr(armer, "state", "DISARMED") in ("DISARMED", "COMPLETE")
+    rows += mount_rows(m, ml.derive(cfg, m, datetime.utcnow()) if m else None, idle=idle)
 
     from photonscript.scheduler import protrack_recheck as pr
     rec, err = await _guard("protrack", lambda: pr.recheck(cfg, "prearm", armer_state=state,

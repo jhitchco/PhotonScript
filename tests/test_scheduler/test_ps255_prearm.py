@@ -238,3 +238,23 @@ def test_arm_does_not_push_protrack_while_not_judged(monkeypatch):
     asyncio.run(a._warn_protrack_unguided(
         {"rows": [{"id": "protrack_on", "status": "fail", "current": "OFF", "protrack": "off"}]}))
     assert len(sent) == 1 and "ProTrack is OFF" in sent[0]
+
+
+def test_camera_idle_by_day_is_not_a_warning():
+    assert pa.camera_idle({"Connected": True, "CoolerOn": False, "Temperature": 28.8}) == ("cooler off", 28.8)
+    assert pa.camera_idle({"Connected": False, "Temperature": 28.8}) is None
+    assert pa.camera_idle({"Connected": True, "Temperature": float("nan")}) is None
+    assert pa.camera_idle(None) is None
+    rows = pa.live_rows({"rc16": {"camera": ("cooler off", 28.8)},
+                         "piggyback": {"camera": None}})
+    st = {r["label"]: (r["status"], r["current"]) for r in rows}
+    assert st["rc16 camera"] == ("pass", "connected, cooler off until the arm (sensor 28.8 C)")
+    assert st["piggyback camera"][0] == "warn"
+
+
+def test_tracking_by_day_with_no_session_warns():
+    m = {"connected": True, "parked": False, "tracking": True}
+    park = lambda rows: next(r for r in rows if r["label"] == "Park state")
+    assert park(pa.mount_rows(m, None, idle=True))["status"] == "warn"
+    assert park(pa.mount_rows(m, None, idle=False))["status"] == "info"
+    assert park(pa.mount_rows({**m, "parked": True, "tracking": False}, None, idle=True))["status"] == "info"
