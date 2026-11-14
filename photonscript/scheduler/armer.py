@@ -950,6 +950,12 @@ class Armer:
             self.protrack_state = p["state"]   # PS-212: the plan heads-up
             if p["state"] == "on":
                 return
+            if str(p.get("current") or "").startswith("not judged"):
+                # PS-255: parked / not connected / not tracking at arm: the
+                # boxes are greyed and unreadable. protrack_recheck judges
+                # them once the mount tracks and pushes only if really off.
+                logger.info("ProTrack at arm: %s (judged once tracking)", p.get("current"))
+                return
             head = ("ProTrack is OFF" if p["state"] == "off"
                     else "ProTrack could not be confirmed on")
             await notify(self.config,

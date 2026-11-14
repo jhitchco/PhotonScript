@@ -103,12 +103,14 @@ def test_the_2026_10_05_audit_no_longer_passes_from_the_record():
     for rid in ("tpoint_model_active", "tpoint_points", "protrack_on"):
         assert rows[rid]["status"] != "pass", rid
     p = rows["protrack_on"]
-    assert p["status"] == "warn" and p["current"] == "OFF (greyed)"
+    # PS-255: unreadable boxes are "not judged", never "OFF"
+    assert p["status"] == "warn" and p["current"] == "not judged (mount not connected)"
+    assert p["protrack"] == "unknown"
     assert "not connected" in p["note"] and "manual (2026-10-05) says on" in p["note"]
     assert rows["tpoint_points"]["status"] == "info"
     assert rows["tpoint_points"]["current"] == "manual (2026-10-05): 250"
     rows, _ = _eval(dict(live, armer_state="ARMED"))
-    assert rows["protrack_on"]["status"] == "fail"
+    assert rows["protrack_on"]["status"] == "warn"     # PS-255: judged once tracking
 
 
 def test_protrack_live_reads():
@@ -154,7 +156,13 @@ def test_model_rows_judge_the_live_value():
 def test_protrack_status_helper():
     rows, _ = _eval({"thesky-script": {"mount_connected": False}, "armer_state": "ARMED"})
     p = ta.protrack_status({"rows": list(rows.values())})
-    assert p["state"] == "off" and p["status"] == "fail" and "Activate ProTrack" in p["fix"]
+    # PS-255: TheSky's mount not connected = the boxes are unreadable: not
+    # judged (the mount row says what is wrong), never "off"
+    assert p["state"] == "unknown" and p["status"] == "warn" and "Activate ProTrack" in p["fix"]
+    rows, _ = _eval({"thesky-script": {"mount_connected": True, "mount_tracking": True,
+                                       "protrack_on": False}, "armer_state": "ARMED"})
+    p = ta.protrack_status({"rows": list(rows.values())})
+    assert p["state"] == "off" and p["status"] == "fail"
     assert ta.protrack_status(None)["state"] == "unknown"
 
 
@@ -308,7 +316,9 @@ def test_protrack_judged_once_unparked_and_tracking():
     assert rows["protrack_on"]["status"] == "fail" and rows["protrack_on"]["current"] == "OFF"
     rows, _ = _eval({"thesky-script": dict(live, protrack_on=True, protrack_adjustments=True)})
     assert rows["protrack_on"]["status"] == "pass"
-    # TheSky not connected (parked flag meaningless): the PS-138 rule stands
+    # TheSky not connected (parked flag meaningless): not judged (PS-255),
+    # never a pass
     rows, _ = _eval({"thesky-script": {"mount_connected": False, "mount_parked": True},
                      "armer_state": "ARMED"})
-    assert rows["protrack_on"]["status"] == "fail"
+    assert rows["protrack_on"]["status"] == "warn"
+    assert rows["protrack_on"]["current"] == "not judged (mount not connected)"

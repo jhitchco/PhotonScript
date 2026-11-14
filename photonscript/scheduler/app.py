@@ -716,6 +716,14 @@ async def _start_mount_ledger():
 
 
 @app.on_event("startup")
+async def _start_prearm():
+    """PS-255: the pre-arm readiness check, after the daily app start and
+    before the auto-arm window. Idle when prearm_enabled is false."""
+    from photonscript.scheduler.prearm import run_loop
+    _spawn(run_loop(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_after_action():
     """PS-254: one after-action report per night after the dawn shutdown
     (push / email per after_action_mode). Idle when off."""
@@ -944,6 +952,10 @@ _CONFIG_FIELDS = [
     ("dawn_mount_check_mode", "PS_DAWN_MOUNT_CHECK_MODE", "Dawn mount check (PS-185): alert = one priority page when the mount is unparked and tracking after astro dawn with no armed night or NINA #1 sequence (runs when DISARMED too) | off; never parks", "Nanny / Alerts", "str", False, False),
     ("dawn_mount_check_after_dawn_min", "PS_DAWN_MOUNT_CHECK_AFTER_DAWN_MIN", "Dawn mount check: start checking this many minutes after astro dawn", "Nanny / Alerts", "float", False, False),
     ("after_action_mode", "PS_AFTER_ACTION_MODE", "After-action report (PS-254): push = one Pushover with the night timeline and the report link after the dawn shutdown | email = the full report (card, timeline, thumbnails, contact-sheet links) by SMTP | both | off. Page: /report/<night>", "Nanny / Alerts", "str", False, False),
+    ("prearm_enabled", "PS_PREARM_ENABLED", "Pre-arm check (PS-255): one checklist of every app, device, setting, TheSky / TPoint / ProTrack and Windows state, run after the daily app start and before the auto-arm window. Page: /prearm", "Nanny / Alerts", "bool", False, False),
+    ("prearm_after_start_min", "PS_PREARM_AFTER_START_MIN", "Pre-arm check: first run this many minutes after the daily app start", "Nanny / Alerts", "float", False, False),
+    ("prearm_before_arm_min", "PS_PREARM_BEFORE_ARM_MIN", "Pre-arm check: second run this many minutes before the auto-arm window opens", "Nanny / Alerts", "float", False, False),
+    ("prearm_push", "PS_PREARM_PUSH", "Pre-arm check: one Pushover listing only what needs you (not repeated unless it changed or a fail remains)", "Nanny / Alerts", "bool", False, False),
     ("after_action_after_shutdown_min", "PS_AFTER_ACTION_AFTER_SHUTDOWN_MIN", "After-action report: send this many minutes after the dawn shutdown", "Nanny / Alerts", "float", False, False),
     ("after_action_base_url", "PS_AFTER_ACTION_BASE_URL", "After-action report: dashboard address used in the report link (Tailscale name)", "Nanny / Alerts", "str", False, False),
     ("after_action_smtp_host", "PS_AFTER_ACTION_SMTP_HOST", "After-action email: SMTP server (Gmail: smtp.gmail.com)", "Nanny / Alerts", "str", False, False),
@@ -3836,6 +3848,8 @@ from photonscript.scheduler.routers import pointing as _pointing_router  # noqa:
 app.include_router(_pointing_router.router)
 from photonscript.scheduler.routers import report as _report_router  # noqa: E402
 app.include_router(_report_router.router)
+from photonscript.scheduler.routers import prearm as _prearm_router  # noqa: E402
+app.include_router(_prearm_router.router)
 from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
 app.include_router(_calibration_router.router)
 from photonscript.scheduler.routers import rotation as _rotation_router  # noqa: E402

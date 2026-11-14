@@ -289,6 +289,13 @@ class PhotonScriptConfig(BaseSettings):
     after_action_smtp_user: str = ""
     after_action_smtp_password: str = ""
     after_action_email_to: str = ""
+    # PS-255 pre-arm readiness: one checklist of everything the night needs
+    # (devices, settings, TheSky, Windows...), after the app start and an hour
+    # before the auto-arm window; one push for what needs Jeremy.
+    prearm_enabled: bool = True
+    prearm_after_start_min: float = 30.0
+    prearm_before_arm_min: float = 60.0
+    prearm_push: bool = True
     # PS-252 mount truth ledger: TheSky's own position / site / clock, the
     # mapping error at every NINA Center, ImagingSystem.ini changes.
     mount_ledger_mode: str = "alert"  # alert | observe | off (reads only)

@@ -936,15 +936,19 @@ def _c_protrack(row, val, observed, config, ctx):
             return PASS, want, None
         ctx["current"] = "on (tracking adjustments not readable)"
         return UNKNOWN, want, "verify by eye: Enable tracking adjustments ticked"
-    # nothing live about ProTrack itself: what TheSky's mount state implies
+    # nothing live about ProTrack itself: what TheSky's mount state implies.
+    # PS-255 (2026-11-14): the boxes cannot be read, so this is "not judged",
+    # never "OFF": the arm-time push said "ProTrack is OFF, tick it" at most
+    # unguided arms since 10-17 while both boxes were ticked (greyed only
+    # because TheSky's mount was disconnected or parked). protrack_recheck
+    # judges it once the mount tracks and pushes when it really reads off.
     if conn is False or (conn and trk is False):
-        why = ("TheSky's mount is not connected" if conn is False else
-               "TheSky's mount is not tracking")
-        ctx["current"] = "OFF (greyed)"
-        ctx["protrack"] = "off"
-        return (FAIL if armed else WARN), want, (
-            f"{why}: ProTrack is greyed and cannot be working (NINA may still drive "
-            f"the mount through the ASCOM driver){hint}")
+        why = "mount not connected" if conn is False else "mount not tracking"
+        ctx["current"] = f"not judged ({why})"
+        ctx["protrack"] = "unknown"
+        return WARN, want, (
+            f"not judged: TheSky's {why}, so ProTrack is greyed and its boxes cannot "
+            f"be read; it is judged once the mount tracks{hint}")
     ctx["protrack"] = "unknown"
     if man is not None:
         ctx["current"] = f"{_manual_tag(observed)}: {'on' if _bool(man) else 'off'}"
