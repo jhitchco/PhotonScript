@@ -125,6 +125,9 @@ NINA_PATHS = {
     "camera_info": ["/equipment/camera/info"],   # PS-64 pause wait
     "camera_warm": ["/equipment/camera/warm"],
     "mount_connect": ["/equipment/mount/connect"],
+    # PS-238: only when a park was undone (park sticks): NINA #1 lets go of
+    # the mount so its auto-reconnect cannot unpark it again
+    "mount_disconnect": ["/equipment/mount/disconnect"],
     "camera_connect": ["/equipment/camera/connect"],
     "guider_start": ["/equipment/guider/start"],
     "guider_stop": ["/equipment/guider/stop"],
@@ -283,6 +286,9 @@ class Armer:
         # 2026-11-05: a (re-)dispatch in flight (NINA watchdog idle check)
         self.dispatch_started_at: datetime | None = None
         self.dispatch_ended_at: datetime | None = None
+        # PS-238: the post-park re-read (park sticks) and its last result
+        self._park_stick_task: asyncio.Task | None = None
+        self.park_stick: dict | None = None
         # PS-152: tonight's dusk focus calibration (PS-144) once dispatched:
         # {"night", "container", "status": "dispatched" | "done", "field"}
         self.focus_cal: dict | None = None
@@ -1040,6 +1046,8 @@ class Armer:
         self.last_raw = None
         report = "make-safe " + " | ".join(steps)
         logger.warning(report)
+        if "park:ok" in report:
+            self._park_stick_later("make-safe")   # PS-238
         return report
 
     async def connect_all(self, rig: str = "rc16") -> dict:
@@ -1057,7 +1065,14 @@ class Armer:
         from photonscript.shared.rigs import rig_config, rig_connect_devices
         cfg = rig_config(self.config, rig)
         results = {}
-        for dev in rig_connect_devices(self.config, rig):   # PS-189: + flat device
+        # PS-238: the mount last, so its connect guard (no connect while
+        # TheSky reads it parked or the roof reads unsafe and no night runs;
+        # preflight._ensure_connected -> unpark_guard) sees a connected
+        # safety monitor. A skip is "skipped (mount parked by day)" /
+        # "skipped (roof unsafe)" (info on the PS-255 pre-arm page).
+        devices = sorted(rig_connect_devices(self.config, rig),   # PS-189: + flat device
+                         key=lambda d: d == "mount")
+        for dev in devices:
             if dev == "guider" and self._guider_unwanted():
                 # 2026-10-13: an unguided night leaves NINA's guider
                 # disconnected (the meridian flip would start PHD2)
@@ -1279,6 +1294,103 @@ class Armer:
             return f"park ok (already parked, {src})"
         return f"park FAILED ({why})"
 
+    # -- PS-238: park sticks -------------------------------------------------
+    # The Bisque driver's UnparkOnConnect unparks the mount whenever something
+    # connects it (2026-11-02: NINA #1's mount auto-reconnect undid parks
+    # within 5 s). After every PhotonScript park the state is read again
+    # _park_stick_s later; unparked = NINA #1 lets go of the mount, the
+    # existing park path parks again (PS-253 verify), one P1 push. One
+    # recovery per park: a second unpark is pushed, not fought.
+    _park_stick_s = 30.0
+
+    async def _stick_parked(self) -> tuple[bool | None, str]:
+        """(parked, source): TheSky's IsParked first (read only), else
+        _park_state's NINA / mount-log reads. Never raises."""
+        try:
+            ts = await self._thesky_parked()
+            if ts is not None:
+                return ts, "TheSky"
+            return await self._park_state()
+        except Exception as e:  # noqa: BLE001
+            logger.info("park stick read failed: %s", e)
+            return None, ""
+
+    def _park_stick_later(self, why: str) -> None:
+        """Schedule the re-read after a park (no-op when _park_stick_s <= 0,
+        outside a running loop, or while one is already pending)."""
+        try:
+            if float(self._park_stick_s) <= 0:
+                return
+            t = self._park_stick_task
+            if t is not None and not t.done():
+                return
+            self._park_stick_task = asyncio.create_task(
+                self._park_stick_check(why, str(self.state or "")))
+        except RuntimeError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning("park stick not scheduled: %s", e)
+
+    async def _park_stick_check(self, why: str, state0: str,
+                                delay_s: float | None = None, notify_fn=None) -> dict:
+        """PS-238: is the mount still parked delay_s after the `why` park?
+        Skipped when the armer moved on (state changed, a dispatch in
+        flight) or NINA #1 runs a sequence (its own unpark). Never raises."""
+        from photonscript.scheduler import unpark_guard as ug
+        delay = float(self._park_stick_s if delay_s is None else delay_s)
+        res: dict = {"why": why, "at": None, "result": None}
+        try:
+            await _armer_sleep(max(0.0, delay))
+            res["at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            if str(self.state or "") != state0 or self.dispatch_in_flight():
+                res["result"] = "skip (the armer moved on)"
+                return res
+            from photonscript.scheduler.dawn_mount_check import nina_busy
+            busy = await nina_busy(self.config)
+            if busy:
+                res["result"] = f"skip (NINA #1 runs {busy[-1]})"
+                return res
+            parked, src = await self._stick_parked()
+            res["parked"], res["source"] = parked, src
+            if parked is not False:
+                res["result"] = "held" if parked else "unknown (nothing reads the mount)"
+                return res
+            disc = await self._nina("mount_disconnect") is not None
+            conn = await self._nina("mount_connect") is not None
+            step = await self._park_step()
+            await _armer_sleep(max(0.0, delay))
+            again, src2 = await self._stick_parked()
+            after = ("it held" if again else
+                     f"it is UNPARKED AGAIN ({src2})" if again is False else
+                     "nothing reads the mount")
+            res.update(result="re-parked", step=step, held=again is True,
+                       disconnect=disc, connect=conn)
+            msg = (f"Park undone: after the {why} park, {src} read the mount "
+                   f"UNPARKED {delay:g} s later (the Bisque driver's Unpark on "
+                   "connect: something reconnected the mount). PhotonScript "
+                   f"disconnected NINA #1's mount ({'ok' if disc else 'FAILED'}), "
+                   f"reconnected it ({'ok' if conn else 'FAILED'}) and parked "
+                   f"again: {step}; {delay:g} s later {after}. For good: "
+                   f"{ug.FIX_UNPARK}. If it unparks again: NINA #1 > Equipment > "
+                   "Mount > Disconnect, then TheSky: Telescope > Park.")
+            res["msg"] = msg
+            logger.warning("PS-238 %s", msg)
+            try:
+                await (notify_fn or notify)(
+                    self.config, msg, title="PhotonScript park undone",
+                    priority=1, kind="act", safety=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("park undone push failed: %s", e)
+            return res
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("park stick check failed: %s", e)
+            res["result"] = f"error ({e})"
+            return res
+        finally:
+            self.park_stick = res
+
     async def _close_piggy_cover(self) -> str | None:
         """PS-189: panel light off + cover closed on NINA #2 when the
         Piggy-600 has its Wanderer Cover (dawn shutdown, unsafe stop,
@@ -1337,6 +1449,8 @@ class Armer:
             steps.append(f"{rig} warm {'ok' if w.get('ok') else 'FAILED'}"
                          f"/dew {'ok' if d.get('ok') else 'FAILED'}")
         steps.append(await self._park_step())
+        if steps[-1].startswith("park ok"):
+            self._park_stick_later("dawn shutdown")   # PS-238
         self.shutdown = {"at": datetime.utcnow().isoformat() + "Z",
                          "reason": reason, "steps": steps, "verify": None,
                          # PS-159: real failures only (already parked /
@@ -4110,6 +4224,8 @@ class Armer:
                        + " (cooler kept on; Resume re-dispatches)")
                 self._set_state(PAUSE_STATE, msg)
                 self._pause_event("park_unsafe", msg, now, ok=ok)
+                if ok:
+                    self._park_stick_later("paused-unsafe park")   # PS-238
                 await notify(self.config, f"Unsafe while paused: {msg}.",
                              title="PhotonScript paused", priority=1, kind="info" if ok else "act", safety=not ok)
             return
@@ -4492,6 +4608,8 @@ class Armer:
                         "on, re-dispatch when safe")
         logger.warning("PS-77 unsafe stop after %d min (%s): %s", mins, why,
                        report)
+        if "park ok" in report:
+            self._park_stick_later("unsafe stop")   # PS-238
         # NINA ignored an unsafe roof: a safety act even when the park was ok
         await notify(self.config,
                      f"SAFETY STOP: unsafe for {mins} min but NINA was still "

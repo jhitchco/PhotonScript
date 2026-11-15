@@ -553,7 +553,24 @@ def collect_thesky(config, client=None) -> tuple[dict, dict, dict]:
         return {}, {}, {"ok": False, "note": src.get("note") or "TheSky not reachable"}
     live = {k: obs.get(k) for k in THESKY_LIVE if obs.get(k) is not None}
     settings = {k: v for k, v in obs.items() if k not in THESKY_LIVE and k not in THESKY_DROP}
+    settings["ascom_driver"] = bisque_driver_flags()
     return settings, live, {"ok": True, "note": src.get("note") or "read"}
+
+
+def bisque_driver_flags() -> dict:
+    """PS-238: the Software Bisque ASCOM telescope driver's flags (HKLM,
+    phd2_profile_store.read_ascom, read only): {"unpark_on_connect",
+    "use_direct_guide", "can_get_pier_side"}, each None when not read."""
+    names = {"ascom_unpark_on_connect": "unpark_on_connect",
+             "ascom_direct_guide": "use_direct_guide",
+             "ascom_pointing_state": "can_get_pier_side"}
+    try:
+        from photonscript.scheduler import phd2_profile_store as ps
+        asc = ps.read_ascom()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Bisque driver flags not read: %s", e)
+        asc = {}
+    return {short: (asc.get(k) or {}).get("value") for k, short in names.items()}
 
 
 def collect_photonscript(config) -> tuple[dict, dict, dict]:
