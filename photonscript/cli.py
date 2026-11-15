@@ -1941,6 +1941,55 @@ def campaign_mirror_cmd(
     raise typer.Exit(1 if res["errors"] else 0)
 
 
+@app.command("report-bundle")
+def report_bundle_cmd(
+    date: str = typer.Option(..., "--date", help="The night (YYYY-MM-DD, the evening date)"),
+    out: str = typer.Option(..., "--out", help="Folder to write bundle.json, body.html, body.txt and the images"),
+    early: bool = typer.Option(False, "--early",
+                               help="Astro-dawn build: before the dawn flats and the park"),
+    url: str = typer.Option("", "--url", help="Scheduler (default integration_report_url)"),
+):
+    """PS-260: download the night's after-action email bundle (subject, text,
+    Gmail-safe HTML with cid:att0..attN, the images) so a desktop session
+    can send it through Gmail with the images as inline attachments[0..N]
+    in the printed order. Afterwards POST /api/report/<date>/sent.
+
+    photonscript report-bundle --date 2026-11-13 --out C:/tmp/aar --early
+    """
+    import json as _json
+    import httpx
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    base = (url or getattr(cfg, "integration_report_url", "")).rstrip("/")
+    q = {"early": "1"} if early else {}
+    try:
+        r = httpx.get(f"{base}/api/report/{date}/email-bundle", params=q, timeout=180)
+        r.raise_for_status()
+        b = r.json()
+        d = Path(out)
+        d.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for i, im in enumerate(b.get("images") or []):
+            ri = httpx.get(f"{base}{im['path']}", timeout=120)
+            ri.raise_for_status()
+            p = d / f"att{i}_{Path(im['name']).name}"
+            p.write_bytes(ri.content)
+            paths.append(str(p.resolve()))
+    except Exception as e:  # noqa: BLE001
+        console.print(f"report bundle: cannot read {base}: {e}", markup=False)
+        raise typer.Exit(1)
+    (d / "body.html").write_text(b["html"], encoding="utf-8")
+    (d / "body.txt").write_text(b["text"], encoding="utf-8")
+    (d / "bundle.json").write_text(_json.dumps(dict(b, local_images=paths), indent=1),
+                                   encoding="utf-8")
+    console.print(f"subject: {b['subject']}", markup=False, highlight=False)
+    console.print(f"sent: {b.get('sent') or 'not yet'}", markup=False, highlight=False)
+    for name in ("bundle.json", "body.html", "body.txt"):
+        console.print(str((d / name).resolve()), markup=False, highlight=False)
+    for i, p in enumerate(paths):
+        console.print(f"cid:att{i} {p}", markup=False, highlight=False)
+    raise typer.Exit(0)
+
+
 @app.command("calibration-plan")
 def calibration_plan_cmd(
     rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: every rig)"),

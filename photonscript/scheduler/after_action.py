@@ -25,6 +25,16 @@ GET /report/{date} is the page itself (images inline, works on the phone
 over Tailscale); GET /api/runs/{date}/timeline.png the timeline alone;
 POST /api/report/{date}/send sends it now (manual, ignores the once-a-night
 latch). Reads only; never touches NINA, the mount or a setting.
+
+PS-260 (desktop pickup): GET /api/report/{date}/email-bundle is the same
+email as JSON (subject, plain text, Gmail-safe HTML whose images are
+cid:att0..attN in images-list order, timeline first) plus each image at
+GET /api/report/{date}/email-bundle/image/{n}, so a desktop session can
+send it through its Gmail connector (attachments[n], inline). ?early=1
+builds it at astro dawn, before the dawn flats and the park, and leaves
+out those lines. POST /api/report/{date}/sent records the send in the
+same latch, so the dawn loop does not email that night again (its push
+is unchanged).
 """
 from __future__ import annotations
 
@@ -35,6 +45,7 @@ import io
 import json
 import logging
 import smtplib
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -44,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 MODES = ("push", "email", "both", "off")
 THUMB_W = 360
+EMAIL_W = 960      # PS-260: a width Gmail shows without side-scrolling
+BUNDLE_TTL_S = 900  # the image endpoint reuses the last bundle this long
 TICK_S = 300
 
 STATE_COLORS = {
@@ -289,18 +302,20 @@ def build(cfg, date: str) -> dict:
             "url": report_url(cfg, date)}
 
 
-def render_html(rep: dict, src) -> str:
+def render_html(rep: dict, src, max_width: int = 1400) -> str:
     """The report as HTML. src(name, bytes, mime) -> the img src to use
-    (a data: URI for the page, a cid: for the email)."""
+    (a data: URI for the page, a cid: for the email). Inline styles only
+    (Gmail drops <style> blocks)."""
     e = html.escape
     parts = ["<div style=\"font-family:Segoe UI,Arial,sans-serif;background:#151920;"
-             "color:#e2e6ec;padding:16px;max-width:1400px\">",
+             f"color:#e2e6ec;padding:16px;max-width:{int(max_width)}px\">",
              f"<h2 style=\"margin:0 0 6px\">{e(rep['title'])}</h2>",
              f"<p style=\"color:#969eaa;margin:0 0 14px\">{rep['kept']} kept, "
              f"{rep['rejected']} rejected. Full page: <a style=\"color:#7fa8e6\" "
              f"href=\"{e(rep['url'])}\">{e(rep['url'])}</a></p>"]
     if rep.get("timeline_png"):
-        parts.append(f"<img alt=\"Night timeline\" style=\"max-width:100%;border-radius:6px\" "
+        parts.append(f"<img alt=\"Night timeline\" width=\"100%\" style=\"max-width:100%;"
+                     "height:auto;display:block;border-radius:6px\" "
                      f"src=\"{src('timeline', rep['timeline_png'], 'image/png')}\">")
     if rep.get("thumbs"):
         parts.append("<h3>Subs</h3><div>")
@@ -343,19 +358,24 @@ def _smtp_ready(cfg) -> bool:
                 "after_action_smtp_password", "after_action_email_to"))
 
 
+def email_text(rep: dict) -> str:
+    """The plain-text body (SMTP email and the PS-260 desktop bundle)."""
+    return "\n".join([rep["title"], rep["url"], ""] + list(rep["lines"])
+                     + [""] + [f"{x['target']}: {x['url']}" for x in rep["links"]])
+
+
 def email_message(cfg, rep: dict) -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = rep["title"]
     msg["From"] = str(getattr(cfg, "after_action_smtp_user", ""))
     msg["To"] = str(getattr(cfg, "after_action_email_to", ""))
-    msg.set_content("\n".join([rep["title"], rep["url"], ""] + rep["lines"]
-                              + [""] + [f"{x['target']}: {x['url']}" for x in rep["links"]]))
+    msg.set_content(email_text(rep))
     imgs: list[tuple[str, bytes, str]] = []
 
     def cid(name, b, mime):
         imgs.append((name, b, mime))
         return f"cid:{name}"
-    msg.add_alternative(render_html(rep, cid), subtype="html")
+    msg.add_alternative(render_html(rep, cid, max_width=EMAIL_W), subtype="html")
     html_part = msg.get_payload()[-1]
     for name, b, mime in imgs:
         main, sub = mime.split("/", 1)
@@ -375,8 +395,75 @@ def send_email(cfg, rep: dict) -> str:
     return f"email sent to {cfg.after_action_email_to}"
 
 
-async def send(cfg, date: str, notify=None, smtp=None) -> dict:
-    """Build and send per after_action_mode. notify / smtp injectable."""
+# ------------------------------------------------------------------ desktop bundle (PS-260)
+
+# card lines that only exist after astro dawn (the dawn flats, the park and
+# shutdown); an early bundle leaves them out
+_EARLY_DROP = ("dawn flats", "shutdown", "night complete", "parked at dawn",
+               "flat window")
+_bundles: dict[tuple[str, bool], tuple[float, dict]] = {}
+
+
+def early_rep(rep: dict) -> dict:
+    """The report as it stands at astro dawn: no dawn flats / shutdown lines."""
+    lines = [ln for ln in rep.get("lines") or []
+             if not any(k in str(ln).lower() for k in _EARLY_DROP)]
+    return dict(rep, lines=lines, title=f"{rep['title']} (at astro dawn)", early=True)
+
+
+def bundle_image_path(date: str, n: int, early: bool = False) -> str:
+    return f"/api/report/{date}/email-bundle/image/{n}" + ("?early=1" if early else "")
+
+
+def email_bundle(cfg, date: str, early: bool = False, rep: dict | None = None) -> dict:
+    """The after-action email for a desktop Gmail send: {date, subject, text,
+    html, images, report_url, sent, early} plus "_bytes" (the image bytes,
+    in images order; the route strips it). html uses cid:att0..attN in that
+    same order (timeline first, then the thumbnails), which is how the Gmail
+    connector names attachments[0..N] sent inline."""
+    rep = build(cfg, date) if rep is None else rep
+    if early:
+        rep = early_rep(rep)
+    imgs: list[tuple[str, bytes, str]] = []
+
+    def cid(name, b, mime):
+        imgs.append((name, b, mime))
+        return f"cid:att{len(imgs) - 1}"
+    body = render_html(rep, cid, max_width=EMAIL_W)
+    base = str(getattr(cfg, "after_action_base_url", "") or "").rstrip("/")
+    ext = {"image/png": "png", "image/jpeg": "jpg"}
+    images = []
+    for i, (name, b, mime) in enumerate(imgs):
+        path = bundle_image_path(date, i, early)
+        images.append({"name": f"{date}_{name}.{ext.get(mime, 'bin')}", "mime": mime,
+                       "cid": f"att{i}", "url": base + path, "path": path,
+                       "bytes_len": len(b)})
+    out = {"date": date, "subject": rep["title"], "text": email_text(rep), "html": body,
+           "images": images, "report_url": rep["url"], "early": bool(early),
+           "sent": email_sent(cfg, date), "_bytes": [b for _n, b, _m in imgs]}
+    _bundles[(date, bool(early))] = (time.monotonic(), out)
+    return out
+
+
+def bundle_image(cfg, date: str, n: int, early: bool = False) -> tuple[bytes, str] | None:
+    """Image n of the night's bundle: from the last bundle built (so the
+    numbering matches the JSON the caller read), rebuilt once that is older
+    than BUNDLE_TTL_S. None when n is out of range."""
+    hit = _bundles.get((date, bool(early)))
+    if hit and time.monotonic() - hit[0] < BUNDLE_TTL_S:
+        b = hit[1]
+    else:
+        b = email_bundle(cfg, date, early=early)
+    if not 0 <= n < len(b["images"]):
+        return None
+    return b["_bytes"][n], b["images"][n]["mime"]
+
+
+async def send(cfg, date: str, notify=None, smtp=None, force: bool = False) -> dict:
+    """Build and send per after_action_mode. notify / smtp injectable.
+    PS-260: the email is skipped when the latch says it already went out
+    for this night (desktop Gmail or an earlier SMTP send) unless force
+    (the manual POST /api/report/{date}/send)."""
     md = mode(cfg)
     rep = await asyncio.to_thread(build, cfg, date)
     out = {"date": date, "mode": md, "title": rep["title"], "steps": []}
@@ -398,10 +485,18 @@ async def send(cfg, date: str, notify=None, smtp=None) -> dict:
         except Exception as e:  # noqa: BLE001
             out["steps"].append(f"push failed: {e}")
     if md in ("email", "both"):
-        try:
-            out["steps"].append(await asyncio.to_thread(smtp or send_email, cfg, rep))
-        except Exception as e:  # noqa: BLE001
-            out["steps"].append(f"email failed: {e}")
+        prior = email_sent(cfg, date)
+        if prior and not force:
+            out["steps"].append(f"email skipped: already sent via {prior.get('via')} "
+                                f"at {prior.get('at')}")
+        else:
+            try:
+                step = await asyncio.to_thread(smtp or send_email, cfg, rep)
+                out["steps"].append(step)
+                if str(step).startswith("email sent"):
+                    mark_email(cfg, date, via="smtp")
+            except Exception as e:  # noqa: BLE001
+                out["steps"].append(f"email failed: {e}")
     try:
         d = Path(getattr(cfg, "data_dir", ".")) / "reports"
         d.mkdir(parents=True, exist_ok=True)
@@ -424,13 +519,46 @@ def _sent(cfg) -> dict:
         return {}
 
 
-def _mark(cfg, date: str, res: dict) -> None:
-    s = _sent(cfg)
-    s[date] = {"at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-               "steps": res.get("steps")}
+def _now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _write_latch(cfg, s: dict) -> None:
     p = _latch_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(s, indent=1), encoding="utf-8")
+
+
+def _entry(s: dict, date: str) -> dict:
+    ent = s.get(date)
+    return dict(ent) if isinstance(ent, dict) else {}
+
+
+def _mark(cfg, date: str, res: dict) -> None:
+    """The dawn loop ran for this night ("at"); keeps any email record."""
+    s = _sent(cfg)
+    ent = _entry(s, date)
+    ent.update({"at": _now_iso(), "steps": res.get("steps")})
+    s[date] = ent
+    _write_latch(cfg, s)
+
+
+def email_sent(cfg, date: str) -> dict | None:
+    """PS-260: the night's email record ({via, message_id, at, early}) or None."""
+    return _entry(_sent(cfg), date).get("email") or None
+
+
+def mark_email(cfg, date: str, via: str, message_id: str = "", early: bool = False) -> dict:
+    """PS-260: record that the night's email went out (desktop Gmail or
+    SMTP). Leaves the loop's own "at" alone, so the dawn push still goes."""
+    s = _sent(cfg)
+    ent = _entry(s, date)
+    rec = {"via": str(via or "desktop")[:60], "message_id": str(message_id or "")[:200],
+           "at": _now_iso(), "early": bool(early)}
+    ent["email"] = rec
+    s[date] = ent
+    _write_latch(cfg, s)
+    return rec
 
 
 def due(cfg, armer, now: datetime) -> str | None:
@@ -443,7 +571,9 @@ def due(cfg, armer, now: datetime) -> str | None:
         return None
     from photonscript.shared.phd2_store import night_of
     night = night_of(cfg, at)
-    return None if night in _sent(cfg) else night
+    # PS-260: an email-only record (desktop pickup) is not the loop having
+    # run; the push still goes
+    return None if _entry(_sent(cfg), night).get("at") else night
 
 
 async def run_loop(get_config, get_armer, tick_s: int = TICK_S) -> None:
