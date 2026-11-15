@@ -2931,6 +2931,27 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-11-14 (park undone by UnparkOnConnect, PS-238): the dawn shutdown
+  parked at 12:53Z; at 17:46:08Z (10:46 MST), the minute the daily app
+  start launched NINA #1 and ran the connect-all, the mount unparked and
+  tracked under a closed roof all afternoon (2026-11-02: NINA #1's mount
+  auto-reconnect undid parks within 5 s). The Bisque ASCOM driver's "Unpark
+  on connect" (HKLM ...\ASCOM.SoftwareBisque.Telescope UnparkOnConnect,
+  also in TheSky's ImagingSystem.ini) unparks the mount whenever anything
+  connects it. Jeremy unticks it; PhotonScript only audits it (settings
+  ledger rule `thesky_unpark_on_connect`, read only, a row on /prearm) and
+  (scheduler/unpark_guard.py): connect-all and the preflight leave a
+  DISCONNECTED mount alone ("skipped (mount parked by day)" / "skipped
+  (roof unsafe)", info on /prearm) while TheSky reads it parked (else the
+  mount log's last line) or NINA #1's safety monitor reads unsafe and no
+  night runs (`mount_connect_guard`; the night sequence's own Connect Mount
+  + Unpark is untouched); every PhotonScript park (dawn shutdown, PS-77
+  unsafe stop, paused-unsafe park, make-safe) is re-read 30 s later, and an
+  undone park gets NINA #1's mount disconnected, one re-park (PS-253
+  verify) and one P1; the NINA watchdog loop pages P1 once on a SAFE ->
+  UNSAFE change while the mount is unparked and no night runs; and the
+  PS-185 dawn mount check also runs by day after noon (sun up, before
+  astro dusk): unparked AND tracking with no armed night = one P1 a day.
 - 2026-11-04 (NINA #1 idle while armed): at 23:05:51 MST NINA #1 logged
   "Sequence run was cancelled" during a slew (a manual Stop) and ran no
   sequence until the roof closed at 02:34. The armer stayed RUNNING and

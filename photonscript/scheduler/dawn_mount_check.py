@@ -20,6 +20,16 @@ dawn_mount_check_after_dawn_min to the noon roll-over of the night:
              runs/<night>_events.jsonl (the latch: a PhotonScript restart
              does not page again)
 
+PS-238 (2026-11-14: the dawn park was undone at 10:46 MST when NINA #1
+connected the mount through the Bisque driver, whose UnparkOnConnect is
+ticked, and it tracked under a closed roof all afternoon): the same check
+runs by day after the noon roll-over too. While the sun is up and before
+tonight's astro dusk, with no armed night and no NINA #1 sequence, an
+unparked AND tracking mount pages once (priority 1, event value
+"day_alert") with the fix "TheSky: Telescope > Tracking off, or park;
+untick UnparkOnConnect". Once a day: the afternoon page is skipped when
+this morning's after-dawn page (the previous night's "alert") already went.
+
 dawn_mount_check_mode: alert (default) | off. Alert only: PhotonScript
 never parks, stops tracking or restarts anything here.
 """
@@ -40,6 +50,11 @@ KIND = "dawn_mount"
 FIX = ("TheSky: Telescope > Park. If TheSky says 'The mount cannot slew', "
        "restart the Bisque control software (TheSky), reconnect the mount, "
        "then park.")
+DAY_VALUE = "day_alert"     # PS-238: the by-day page's event value
+DAY_SUN_ALT_DEG = 0.0       # "by day": the sun above this altitude
+DAY_FIX = ("TheSky: Telescope > Tracking off, or park; untick UnparkOnConnect "
+           "(NINA #1 > Equipment > Mount > Bisque driver settings, or TheSky "
+           "Bisque TCS: Unpark on connect).")
 
 
 def mode(cfg) -> str:
@@ -57,11 +72,36 @@ def after_dawn_min(cfg) -> float:
 
 def dawn_of(cfg, now: datetime) -> tuple[str | None, datetime | None]:
     """(night, astro dawn UTC) of the noon-to-noon night `now` is in."""
+    night, _dusk, dawn = window_of(cfg, now)
+    return night, dawn
+
+
+def window_of(cfg, now: datetime) -> tuple[str | None, datetime | None,
+                                           datetime | None]:
+    """(night, astro dusk UTC, astro dawn UTC) of the noon-to-noon night."""
     from photonscript.scheduler.armer import watch_plan
     plan = watch_plan(cfg, now)
     if "error" in plan or not plan.get("dawn_utc"):
-        return plan.get("night_of"), None
-    return plan["night_of"], datetime.fromisoformat(plan["dawn_utc"].rstrip("Z"))
+        return plan.get("night_of"), None, None
+    dusk = (datetime.fromisoformat(plan["dusk_utc"].rstrip("Z"))
+            if plan.get("dusk_utc") else None)
+    return plan["night_of"], dusk, datetime.fromisoformat(plan["dawn_utc"].rstrip("Z"))
+
+
+def sun_up(cfg, now: datetime) -> bool:
+    """PS-238: the sun above DAY_SUN_ALT_DEG (False when the site is unknown)."""
+    from datetime import timezone
+    from photonscript.shared.pushover import sun_altitude_deg
+    try:
+        alt = sun_altitude_deg(float(cfg.observatory_lat), float(cfg.observatory_lon),
+                               now.replace(tzinfo=timezone.utc))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return alt > DAY_SUN_ALT_DEG
+
+
+def prev_night(night: str) -> str:
+    return (datetime.strptime(night, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 # ------------------------------------------------------------------ reads
@@ -134,11 +174,11 @@ async def nina_busy(cfg) -> list[str] | None:
 
 # ------------------------------------------------------------------ latch
 
-def already_paged(cfg, night: str) -> bool:
+def already_paged(cfg, night: str, value: str = "alert") -> bool:
     try:
         from photonscript.shared.night_events import events_path
         from photonscript.shared.phd2_store import read_jsonl
-        return any(r.get("kind") == KIND and r.get("value") == "alert"
+        return any(r.get("kind") == KIND and r.get("value") == value
                    for r in read_jsonl(events_path(cfg, night)))
     except Exception:  # noqa: BLE001
         return False
@@ -172,21 +212,91 @@ def alert_text(cfg, m: dict, dawn: datetime, now: datetime, busy) -> str:
             "(dawn_mount_check_mode=alert).")
 
 
+def day_alert_text(cfg, m: dict, now: datetime, busy) -> str:
+    from photonscript.shared.localtime import to_local
+    try:
+        hm = to_local(cfg, now).strftime("%H:%M")
+    except Exception:  # noqa: BLE001
+        hm = now.strftime("%H:%MZ")
+    where = (f" (az {m['az']:g}, alt {m['alt']:g})"
+             if m.get("az") is not None and m.get("alt") is not None else "")
+    nina = (" NINA #1 could not be read." if busy is None
+            else " NINA #1 runs no sequence.")
+    return (f"Mount UNPARKED and TRACKING by day at {hm} local{where}, with no "
+            f"armed night ({m.get('source')}): the Bisque driver's Unpark on "
+            "connect unparks it whenever something connects the mount (PS-238)."
+            f"{nina} To fix: {DAY_FIX} PhotonScript did not park it "
+            "(dawn_mount_check_mode=alert).")
+
+
+async def _day_tick(cfg, armer_state: str, now: datetime, night: str | None,
+                    dusk: datetime | None, read, busy_fn, notify, state: dict,
+                    sun: bool | None) -> dict | None:
+    """PS-238: the by-day check after the noon roll-over (sun up, before
+    tonight's astro dusk). None when it is not day (the caller's idle)."""
+    if not night or dusk is None or now >= dusk:
+        return None
+    if not (sun_up(cfg, now) if sun is None else sun):
+        return None
+    day = state.setdefault("day_paged", set())
+    if (night in day or already_paged(cfg, night, DAY_VALUE)
+            or already_paged(cfg, prev_night(night))):
+        day.add(night)
+        return {"state": "paged", "why": "already paged today", "night": night,
+                "day": True}
+    if armer_state in LIVE:
+        return {"state": "skip", "why": f"armer {armer_state}: a night is armed",
+                "night": night, "day": True}
+    busy = await (busy_fn or nina_busy)(cfg)
+    if busy:
+        return {"state": "skip", "why": "NINA #1 is running " + busy[-1],
+                "night": night, "day": True}
+    m = await (read or read_mount)(cfg)
+    if not m:
+        return {"state": "unknown", "why": "neither TheSky nor NINA reads the mount",
+                "night": night, "day": True}
+    if m.get("parked") is False and m.get("tracking") is True:
+        msg = day_alert_text(cfg, m, now, busy)
+        day.add(night)
+        _event(cfg, night, DAY_VALUE, msg, now, source=m.get("source"),
+               alt=m.get("alt"), az=m.get("az"), armer=armer_state)
+        if notify is None:
+            from photonscript.shared.pushover import notify as _notify
+            notify = _notify
+        try:
+            await notify(cfg, msg, title="PhotonScript mount tracking by day",
+                         priority=1, kind="act", safety=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("day mount page not sent: %s", e)
+        logger.warning(msg)
+        return {"state": "alert", "why": msg, "night": night, "mount": m, "day": True}
+    return {"state": "ok", "why": ("parked" if m.get("parked") else
+                                   "not tracking" if m.get("tracking") is False
+                                   else "unknown park / tracking"),
+            "night": night, "mount": m, "day": True}
+
+
 # ------------------------------------------------------------------ tick
 
 async def tick(cfg, armer_state: str, now: datetime | None = None,
-               read=None, busy_fn=None, notify=None, state: dict | None = None) -> dict:
+               read=None, busy_fn=None, notify=None, state: dict | None = None,
+               sun: bool | None = None) -> dict:
     """One check. read(cfg) -> mount dict, busy_fn(cfg) -> running items
     and notify are injectable for tests; state is the in-memory latch
-    ({"paged": set of nights}). Returns {"state", "why", ...}."""
+    ({"paged": set of nights, "day_paged": set of nights}); sun overrides
+    the sun-up test (PS-238 by-day check). Returns {"state", "why", ...}."""
     now = now or datetime.utcnow()
     state = state if state is not None else _STATE
     if mode(cfg) == "off":
         return {"state": "off", "why": "dawn_mount_check_mode off"}
-    night, dawn = dawn_of(cfg, now)
+    night, dusk, dawn = window_of(cfg, now)
     if dawn is None:
         return {"state": "idle", "why": "no astro dawn computed"}
     if now < dawn + timedelta(minutes=after_dawn_min(cfg)):
+        res = await _day_tick(cfg, armer_state, now, night, dusk, read, busy_fn,
+                              notify, state, sun)
+        if res is not None:
+            return res
         return {"state": "idle", "why": "before astro dawn + "
                 f"{after_dawn_min(cfg):g} min", "night": night}
     if night in state.setdefault("paged", set()) or already_paged(cfg, night):
@@ -224,7 +334,7 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
             "night": night, "mount": m}
 
 
-_STATE: dict = {"paged": set()}
+_STATE: dict = {"paged": set(), "day_paged": set()}
 
 
 async def run_dawn_mount_check(get_config, get_armer, tick_seconds: int = TICK_S) -> None:

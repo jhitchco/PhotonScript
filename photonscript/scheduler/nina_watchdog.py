@@ -975,6 +975,11 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
             await tick(cfg, state, dusk_utc=dusk, owned=owned, dawn_utc=dawn,
                        idle_hold=idle_hold_reason(armer),
                        restart=_pilot_restart(cfg, armer))
+            try:   # PS-238: roof SAFE -> UNSAFE with the mount unparked, no night
+                from photonscript.scheduler import unpark_guard
+                await unpark_guard.unsafe_tick(cfg, state)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("unsafe watch tick failed: %s", e)
             try:   # the Piggy-600 shooting lights on a mount that does not track
                 from photonscript.scheduler import piggy_guard
                 await piggy_guard.tick(cfg)

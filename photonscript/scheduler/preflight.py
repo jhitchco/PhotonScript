@@ -146,12 +146,23 @@ async def _connected(config, device: str, timeout=8):
         return False, {}, f"{type(e).__name__}: {e}"
 
 
-async def _ensure_connected(config, device: str, attempts: int = 3):
+async def _ensure_connected(config, device: str, attempts: int = 3, armer=None):
     """Read state; if disconnected, actively connect and re-read. Returns
-    (connected, payload, detail) where detail carries the last error seen."""
+    (connected, payload, detail) where detail carries the last error seen.
+
+    PS-238: a disconnected MOUNT is not connected while TheSky reads it
+    parked or the roof reads unsafe and no night runs (the Bisque driver's
+    UnparkOnConnect would unpark it): (False, payload, "skipped (mount
+    parked by day)" / "skipped (roof unsafe)"). armer: the caller's armer
+    (None = the service's). The night sequence's own connect is not this."""
     connected, payload, err = await _connected(config, device)
     if connected:
         return True, payload, ""
+    if device == "mount":
+        from photonscript.scheduler import unpark_guard
+        why = await unpark_guard.connect_skip_reason(config, armer)
+        if why:
+            return False, payload, unpark_guard.skipped(why)
     for _ in range(attempts):
         err = await _nina_connect(config, device) or err
         await asyncio.sleep(3)
@@ -301,6 +312,13 @@ async def run_preflight(config, test_push: bool = True) -> dict:
         if connected:
             checks.append(_check("Mount", "pass",
                                  f"Connected, tracking={payload.get('TrackingEnabled', payload.get('Tracking', '?'))}"))
+        elif str(err or "").startswith("skipped ("):
+            # PS-238: left disconnected on purpose (no night runs); the
+            # night sequence connects and unparks it once safe
+            checks.append(_check("Mount", "pass",
+                                 f"Not connected on purpose: {err[9:-1]} (PS-238: the "
+                                 "Bisque driver would unpark it; the night sequence "
+                                 "connects it)"))
         else:
             checks.append(_check("Mount", "warn",
                                  f"Would not connect (tried auto-connect)"

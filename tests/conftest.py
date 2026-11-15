@@ -180,6 +180,17 @@ def _park_verify_instant(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _unpark_guard_off(monkeypatch):
+    """PS-238: the mount connect guard reads TheSky and NINA #1 (network)
+    before a mount connect, and every park schedules a re-read 30 s later;
+    no test should do either. tests/test_scheduler/test_ps238_unpark_guard.py
+    turns them on."""
+    from photonscript.scheduler.armer import Armer
+    monkeypatch.setenv("PS_MOUNT_CONNECT_GUARD", "false")
+    monkeypatch.setattr(Armer, "_park_stick_s", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _settings_ledger_off(monkeypatch):
     """Settings ledger: the armer would snapshot NINA, PHD2 and TheSky (over
     the network) on every state change; no test should. The ledger's own

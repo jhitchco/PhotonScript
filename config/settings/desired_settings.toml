@@ -784,6 +784,17 @@ why = "Unguided nights depend on ProTrack; it is greyed (reads off) while parked
 fix = "TheSky: Telescope > Bisque TCS > ProTrack: Activate ProTrack and Enable tracking adjustments (mount connected and tracking)."
 
 [[rule]]
+id = "thesky_unpark_on_connect"
+app = "thesky"
+rig = "rc16"
+label = "Bisque driver: Unpark on connect"
+path = "ascom_driver.unpark_on_connect"
+equals = false
+severity = "fail"
+why = "PS-238: ticked, whatever connects the mount through the Bisque ASCOM driver unparks it and starts tracking. 2026-11-14 the dawn park was undone at 10:46 MST when the daily app start connected NINA #1 and the mount tracked under a closed roof all afternoon; 2026-11-02 NINA #1's mount auto-reconnect undid parks within 5 s. Read only from HKLM SOFTWARE\\WOW6432Node\\ASCOM\\Telescope Drivers\\ASCOM.SoftwareBisque.Telescope UnparkOnConnect (TheSky's ImagingSystem.ini has UnparkOnConnect too); PhotonScript never writes it. The night sequence unparks on its own once safe."
+fix = "NINA #1 > Equipment > Mount > Bisque driver settings (or TheSky Bisque TCS): untick Unpark on connect"
+
+[[rule]]
 id = "thesky_tpoint_active"
 app = "thesky"
 rig = "rc16"

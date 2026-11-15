@@ -137,6 +137,10 @@ ASCOM_DRIVER_KEY = r"SOFTWARE\WOW6432Node\ASCOM\Telescope Drivers\ASCOM.Software
 ASCOM_KEYS: dict[str, tuple[str, str | None, bool]] = {
     "ascom_direct_guide":    (ASCOM_DRIVER_KEY, "UseDirectGuide", True),
     "ascom_pointing_state":  (ASCOM_DRIVER_KEY, "CanGetPierSide", True),
+    # PS-238: ticked, any program connecting the mount through this driver
+    # unparks it (2026-11-14: NINA #1 at the daily app start). Audited by
+    # the settings ledger (thesky_unpark_on_connect); never written.
+    "ascom_unpark_on_connect": (ASCOM_DRIVER_KEY, "UnparkOnConnect", True),
 }
 
 

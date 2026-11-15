@@ -279,6 +279,10 @@ class PhotonScriptConfig(BaseSettings):
     nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0
+    # PS-238: never connect a disconnected mount while TheSky reads it parked
+    # or the roof reads unsafe and no night runs (the Bisque driver's
+    # UnparkOnConnect would unpark it). armer.connect_all and the preflight.
+    mount_connect_guard: bool = True
     # PS-254 after-action report: one page per night (card text, timeline
     # image, a few thumbnails, contact-sheet links), sent after dawn.
     after_action_mode: str = "push"  # push | email | both | off
