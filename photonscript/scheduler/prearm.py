@@ -34,7 +34,10 @@ prearm_after_start_min) and prearm_before_arm_min before the auto-arm window
 opens; on demand at POST /api/prearm/run. One Pushover, only for rows that
 need Jeremy, and not repeated at the second run unless they changed or a
 fail remains. Never touches Windows, TheSky or NINA settings; the auto-arm
-gate is unchanged (still preflight).
+gate is unchanged (still preflight). PS-256: when the mount's COM port has a
+problem code, the Windows section runs com_heal.heal (the admin-registered
+"PhotonScript COM heal" task restarts that one device; gated, rate limited)
+and shows the result as a row.
 """
 from __future__ import annotations
 
@@ -527,6 +530,25 @@ def _err_row(section: str, what: str, err: str) -> dict:
     return row(section, what, "unknown", current=f"check failed: {err}", who="claude")
 
 
+async def _com_heal(cfg, armer, pnp: list[dict], trigger: str, now: datetime,
+                    notify=None) -> tuple[dict | None, list[dict] | None]:
+    """PS-256: the mount's COM port has a problem code -> run the COM heal
+    task (gated, rate limited, pages once itself), one row with the result,
+    and the PnP list re-read for the device rows. (None, pnp) when the port
+    is fine or the heal is off."""
+    from photonscript.scheduler import com_heal as ch
+    if not ch.enabled(cfg) or not ch.port_problems(pnp, ch.port(cfg)):
+        return None, pnp
+    res, err = await _guard("com heal", ch.heal(cfg, armer, trigger=f"prearm {trigger}",
+                                                now=now, devs=pnp, notify=notify), 180)
+    if err is not None:
+        return _err_row("Windows", f"COM heal ({ch.port(cfg)})", err), pnp
+    after = (res or {}).get("devices_after")
+    if after is None and (res or {}).get("status") in ("healed", "failed"):
+        after, _ = await asyncio.to_thread(read_pnp)
+    return ch.result_row(res), (after if after is not None else pnp)
+
+
 async def run(cfg, armer=None, trigger: str = "manual", push: bool | None = None,
               connect: bool = True, now: datetime | None = None, notify=None) -> dict:
     """Run every check now. Returns the report (and saves it). Never raises."""
@@ -594,6 +616,10 @@ async def run(cfg, armer=None, trigger: str = "manual", push: bool | None = None
     rows += windows_rows(reg or {"ok": False, "note": err}, win.get("need_from_h"),
                          win.get("need_to_h"))
     pnp, perr = await asyncio.to_thread(read_pnp)
+    if pnp is not None:
+        heal_row, pnp = await _com_heal(cfg, armer, pnp, trigger, now, notify)
+        if heal_row:
+            rows.append(heal_row)
     if pnp is None:
         rows.append(row("Windows", "Device Manager errors", "unknown", current=perr, who="claude"))
     else:

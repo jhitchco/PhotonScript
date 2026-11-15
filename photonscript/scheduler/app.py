@@ -956,6 +956,10 @@ _CONFIG_FIELDS = [
     ("prearm_after_start_min", "PS_PREARM_AFTER_START_MIN", "Pre-arm check: first run this many minutes after the daily app start", "Nanny / Alerts", "float", False, False),
     ("prearm_before_arm_min", "PS_PREARM_BEFORE_ARM_MIN", "Pre-arm check: second run this many minutes before the auto-arm window opens", "Nanny / Alerts", "float", False, False),
     ("prearm_push", "PS_PREARM_PUSH", "Pre-arm check: one Pushover listing only what needs you (not repeated unless it changed or a fail remains)", "Nanny / Alerts", "bool", False, False),
+    ("com_heal_enabled", "PS_COM_HEAL_ENABLED", "COM heal (PS-256): when the mount's COM port has a Device Manager problem code, start the admin-registered task that restarts that one device (deploy\\register-com-heal.ps1, once), then reconnect the mount in TheSky without unparking. Never while a night runs. Page: /api/com-heal", "Nanny / Alerts", "bool", False, False),
+    ("com_heal_port", "PS_COM_HEAL_PORT", "COM heal: the mount's serial port (Device Manager > Ports)", "Nanny / Alerts", "str", False, False),
+    ("com_heal_task_name", "PS_COM_HEAL_TASK_NAME", "COM heal: the scheduled task register-com-heal.ps1 created (PhotonScript only starts it)", "Nanny / Alerts", "str", False, False),
+    ("com_heal_max_per_day", "PS_COM_HEAL_MAX_PER_DAY", "COM heal: at most this many attempts per local day; then one priority page with the manual fix", "Nanny / Alerts", "int", False, False),
     ("after_action_after_shutdown_min", "PS_AFTER_ACTION_AFTER_SHUTDOWN_MIN", "After-action report: send this many minutes after the dawn shutdown", "Nanny / Alerts", "float", False, False),
     ("after_action_base_url", "PS_AFTER_ACTION_BASE_URL", "After-action report: dashboard address used in the report link (Tailscale name)", "Nanny / Alerts", "str", False, False),
     ("after_action_smtp_host", "PS_AFTER_ACTION_SMTP_HOST", "After-action email: SMTP server (Gmail: smtp.gmail.com)", "Nanny / Alerts", "str", False, False),
@@ -3850,6 +3854,8 @@ from photonscript.scheduler.routers import report as _report_router  # noqa: E40
 app.include_router(_report_router.router)
 from photonscript.scheduler.routers import prearm as _prearm_router  # noqa: E402
 app.include_router(_prearm_router.router)
+from photonscript.scheduler.routers import com_heal as _com_heal_router  # noqa: E402
+app.include_router(_com_heal_router.router)
 from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
 app.include_router(_calibration_router.router)
 from photonscript.scheduler.routers import rotation as _rotation_router  # noqa: E402
