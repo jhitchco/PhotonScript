@@ -296,6 +296,14 @@ class PhotonScriptConfig(BaseSettings):
     prearm_after_start_min: float = 30.0
     prearm_before_arm_min: float = 60.0
     prearm_push: bool = True
+    # PS-256 COM heal: when the mount's COM port has a Windows problem code
+    # (code 10 after the 11-13 update reboot), start the admin-registered
+    # task that restarts that one device (deploy\register-com-heal.ps1, run
+    # once by Jeremy), then reconnect the mount in TheSky without unparking.
+    com_heal_enabled: bool = True
+    com_heal_port: str = "COM3"
+    com_heal_task_name: str = "PhotonScript COM heal"
+    com_heal_max_per_day: int = 2
     # PS-252 mount truth ledger: TheSky's own position / site / clock, the
     # mapping error at every NINA Center, ImagingSystem.ini changes.
     mount_ledger_mode: str = "alert"  # alert | observe | off (reads only)
