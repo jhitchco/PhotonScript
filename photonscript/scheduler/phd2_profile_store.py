@@ -108,8 +108,10 @@ KEYS: dict[str, tuple[str, str | None, bool]] = {
     "image_log_lost_star":    ("ImageLogger", "LogFramesDropped", True),
 }
 # Logical keys write() may change (behind phd2_audit_autofix, PHD2 closed and
-# a backup). Empty: reading is verified, writing is not enabled yet.
-WRITABLE: frozenset = frozenset()
+# a backup). 2026-11-14: the calibration step and the camera gain (Jeremy
+# approved 110 ms and 50 for the guided commissioning night); both are plain
+# DWORDs read-verified against the scope PC's registry.
+WRITABLE: frozenset = frozenset({"calibration_step_ms", "gain"})
 # the selected profile id, at the root key
 CURRENT_PROFILE = ("", "currentProfile", True)
 # PHD2 2.6 GUIDE_ALGORITHM enum -> (display name, GuideAlgorithm key name)

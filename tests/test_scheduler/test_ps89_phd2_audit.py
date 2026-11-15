@@ -805,3 +805,22 @@ def test_sources_are_ascii_without_em_dashes():
     root = Path(__file__).resolve().parents[2] / "photonscript"
     for rel in ("scheduler/phd2_audit.py", "scheduler/phd2_profile_store.py"):
         assert all(b < 128 for b in (root / rel).read_bytes()), rel
+
+
+def test_apply_operator_value_overrides_target(tmp_path, monkeypatch):
+    """2026-11-14: gain 50 approved where the tuner's target is 100."""
+    reg = _registry()
+    monkeypatch.setattr(ps, "_winreg", lambda: reg)
+    monkeypatch.setattr(ps, "phd2_running", lambda: False)
+    audit = {"profile_id": "1", "rows": [
+        {"id": "gain", "apply": "profile", "status": pa.WARN, "target": 100, "current": "40"},
+        {"id": "calibration_step_ms", "apply": "profile", "status": pa.WARN,
+         "target": 110, "current": "250"}]}
+    cfg = _cfg(tmp_path, phd2_audit_autofix=True)
+    r = asyncio.run(pa.apply(cfg, ["gain", "calibration_step_ms"], dry_run=True,
+                             armer_state="COMPLETE", audit=audit, values={"gain": 50}))
+    got = {x["id"]: x for x in r["results"]}
+    assert got["gain"]["ok"] and got["gain"]["to"] == {"gain": 50}
+    assert got["calibration_step_ms"]["to"] == {"calibration_step_ms": 110}
+    assert ps.writable("gain") and ps.writable("calibration_step_ms")
+    assert not ps.writable("search_region_px")

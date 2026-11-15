@@ -1693,7 +1693,8 @@ def _apply_profile(config, rows: list[dict], audit: dict, armer_state: str,
 
 
 async def apply(config, ids: list[str], *, dry_run: bool = True, client=None,
-                armer_state: str | None = None, audit: dict | None = None) -> dict:
+                armer_state: str | None = None, audit: dict | None = None,
+                values: dict | None = None) -> dict:
     """Apply the listed rows of the latest audit (Option B). API rows live,
     profile rows only behind phd2_audit_autofix; manual rows are refused."""
     audit = audit or load_latest(config)
@@ -1704,6 +1705,11 @@ async def apply(config, ids: list[str], *, dry_run: bool = True, client=None,
     cam = judged_camera(desired, audit)
     desired_rows = {r.get("id"): r for r in rows_for_camera(desired, cam)}
     by_id = {r["id"]: r for r in audit.get("rows") or []}
+    # 2026-11-14: an operator-approved value replaces the row's target (e.g.
+    # gain 50 where the tuner's target is 100); profile rows only
+    for rid, v in (values or {}).items():
+        if rid in by_id and by_id[rid].get("apply") == "profile" and v is not None:
+            by_id[rid] = {**by_id[rid], "target": v, "status": "warn"}
     from photonscript.telescope_agent.guide_tuner import tune_mode
     results, api_rows, prof_rows = [], [], []
     for rid in ids or []:

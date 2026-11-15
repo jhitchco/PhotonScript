@@ -493,7 +493,7 @@ def test_profile_store_reads_the_export(monkeypatch):
     monkeypatch.setattr(ps, "_winreg", lambda: _export_registry(bad))
     assert ps.read()["derived"]["ga"]["ra_min_move_rec"] == 1.5
     # nothing is writable yet, whatever the audit says
-    assert not any(ps.writable(k) for k in ps.KEYS)
+    assert {k for k in ps.KEYS if ps.writable(k)} == {"calibration_step_ms", "gain"}
 
 
 def test_stored_calibration_graded_fail_for_few_steps(tmp_path, monkeypatch):

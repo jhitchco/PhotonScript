@@ -354,7 +354,10 @@ async def api_phd2_audit_apply(request: Request):
             "ok": False, "note": "ids: the audit rows to apply"})
     dry = (body or {}).get("dry_run", True)
     dry = dry if isinstance(dry, bool) else str(dry).lower() not in ("0", "false", "no")
-    return await pa.apply(_cfg(), ids, dry_run=dry, armer_state=_armer_state())
+    values = (body or {}).get("values")
+    values = values if isinstance(values, dict) else None
+    return await pa.apply(_cfg(), ids, dry_run=dry, armer_state=_armer_state(),
+                          values=values)
 
 
 # ---- PS-90 guide-star auto-tune --------------------------------------------
