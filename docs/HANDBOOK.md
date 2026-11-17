@@ -1770,14 +1770,19 @@ events kind `guider_commission_night`; every step in the night story.
 | calibration | the PS-93 slot (the dispatch files a calibration request) | graded, one retry | PS-93's own fail action |
 | selftest | recipe container | PS-92 (context commission) | logged |
 | ga | recipe container: StartGuiding, 5 min, StopGuiding | RMS; min-move from the frame-to-frame motion with PHD2's GA multipliers (RA 0.65, Dec 1.28 / 1.65); then ga-apply through the PS-89 apply rows (`guider_commission_minmove_apply`) | logged |
-| nb_focus | recipe container | AF + 30 s per filter, rounds L/Ha/OIII then L/OIII/Ha, Ha sweep -220/-110/+110/+220; frames named `Optics test NB <field> <filter> <offset>` (test subs, read by the PS-148 report); `nb-report` decides astigmatism (axis flips: set NB focus offsets) vs filter tilt (constant axis at Ha focus with L round) | WARN when undecided |
+| nb_focus | recipe container | the PS-61 cooler gate first (PS-262: before the slew and AF; a SKIP skips this test only), then AF + 30 s per filter, rounds L/Ha/OIII then L/OIII/Ha, Ha sweep -220/-110/+110/+220; frames named `Optics test NB <field> <filter> <offset>` (test subs, read by the PS-148 report); `nb-report` decides astigmatism (axis flips: set NB focus offsets) vs filter tilt (constant axis at Ha focus with L round) | WARN when undecided |
 | handover | night loop | guided targets, 300 s cap until 15 min at median RMS <= 1.2", then the guided NB ladder | unguided on a fail |
 
 NINA side: every step is `deploy\guider-commission.cmd <step>` ->
 `photonscript guider-commission-step` -> `POST
 /api/guiding/commission-night/step`; exit 1 only on STOP
 (SkipInstructionSetOnError), 0 otherwise. Missing script on the scope: the
-recipe falls back to the normal plan with one page (PS-181). Unguided arm
+recipe falls back to the normal plan with one page (PS-181). PS-262
+(2026-11-15 the armer refused this recipe: the narrowband frames had no
+cooler gate): every recipe container (tracking test, optics test, TPoint
+mapping, guider commission) carries the gate before its lights, and the
+PS-255 pre-arm builds and lints an armed recipe as pre-config will (row
+`tonight:recipe`, fail = it would fall back). Unguided arm
 or an unguided re-dispatch: the recipe container is the narrowband test only.
 
 ### Dispatch gate: lint every night against the arm (PS-197, 2026-10-15)

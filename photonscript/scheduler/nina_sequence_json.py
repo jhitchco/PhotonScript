@@ -2577,7 +2577,10 @@ def _build_guider_commission_container(spec: dict) -> dict:
     rest of the guider steps; the narrowband test still runs). An unguided
     night gets no guider item at all (it never connects the guider). The
     narrowband test has no autofocus trigger (it would refocus the
-    defocused sweep frames) and its sweep moves add up to zero."""
+    defocused sweep frames) and its sweep moves add up to zero. PS-262:
+    with the PS-61 cooler gate on (_cooler_gate_spec from the generator
+    config), the narrowband test starts with the gate, like every light
+    block of the main plan (lint rule cooler-gate)."""
     from types import SimpleNamespace
     steps = set(spec.get("steps") or ())
     guided = bool(spec.get("guided"))
@@ -2659,8 +2662,18 @@ def _build_guider_commission_container(spec: dict) -> dict:
 
         ref = rounds[0][0] if rounds and rounds[0] else FilterType.LUMINANCE
         nb_items = [_stop_guiding()] if guided else []
+        nb_items.append(_cool_camera_bounded(temp, 0.0, cfg))   # PS-154
+        # PS-262: the PS-61 cooler gate in front of the narrowband test, as
+        # the main plan puts one before every light block. Before the slew
+        # and the AF (no point focusing for frames that will not be shot);
+        # a SKIP interrupts this container only, so the guider steps before
+        # it and tonight's targets after it are untouched. 2026-11-15 the
+        # armer refused the recipe because these lights had no gate.
+        gate = _cooler_gate_spec(cfg, temp)
+        if gate:
+            nb_items.append(_cooler_gate(gate, "rc16",
+                                         f"{nb_t.name} NB focus test"))
         nb_items += [
-            _cool_camera_bounded(temp, 0.0, cfg),   # PS-154: never blocks
             _set_tracking(0), _slew(nb_t),
             _switch_filter(ref), _move_focuser(_seed_position(ref)),
             _autofocus(), _center(nb_t), _set_tracking(0),

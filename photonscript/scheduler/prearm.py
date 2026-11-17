@@ -22,7 +22,8 @@ This module runs them all, hours before the arm, as one table:
                   PHD2, TheSky, NINA profiles), failing / unknown rows only
     Windows       PnP devices in error (COM ports, USB), pending reboot,
                   Windows Update active hours against tonight's window, pause
-    Tonight       forecast rating, auto-arm on, the arm window
+    Tonight       forecast rating, auto-arm on, the arm window, and an
+                  armed recipe built and linted as pre-config will (PS-262)
 
 Row: {id, section, label, status, current, want, fix, who}. status is
 fail | warn | wait (not judged yet; the note says when) | unknown | pass |
@@ -329,6 +330,30 @@ def tonight_rows(fc_night: dict | None, auto_arm: bool, window_local: str | None
                                 f"{fc_night.get('dark_hours')} dark h usable"),
                        rid="tonight:forecast"))
     return out
+
+
+def recipe_row(recipe: dict, built: dict | None, err: str | None) -> dict:
+    """PS-262: the armed recipe (PS-181) built and linted now, as the armer
+    will at pre-config. A lint error there means the recipe silently falls
+    back to the normal plan (2026-11-15: guider_commission, cooler-gate), so
+    say it hours before. built: routers/sideload.build_rc16 output."""
+    rid = str(recipe.get("id") or "")
+    label = f"Arm recipe {recipe.get('label') or rid}"
+    fix = (f"/api/sequence/sideload/preview?recipe={rid} shows the lint; "
+           "otherwise pre-config dispatches the normal plan instead")
+    if err is not None:
+        return row("Tonight", label, "unknown", current=f"could not build: {err}",
+                   fix=fix, who="claude", rid="tonight:recipe")
+    res = (built or {}).get("lint")
+    errors = [f"[{f.rule}] {f.detail}" for f in getattr(res, "findings", [])
+              if f.level == "ERROR"]
+    if res is None or not getattr(res, "ok", False):
+        return row("Tonight", label, "fail",
+                   current=("lint failed: " + "; ".join(errors))[:400]
+                   if errors else "lint failed", want="lint PASS",
+                   fix=fix, who="claude", rid="tonight:recipe")
+    return row("Tonight", label, "pass", current=f"lint PASS ({built.get('name')})",
+               rid="tonight:recipe")
 
 
 def counts(rows: list[dict]) -> dict:
@@ -639,6 +664,19 @@ async def run(cfg, armer=None, trigger: str = "manual", push: bool | None = None
     if win.get("arm_open_utc"):
         wl = (win["arm_open_utc"] + timedelta(hours=win.get("offset_h", 0))).strftime("%H:%M")
     rows += tonight_rows(fc_night, bool(getattr(cfg, "auto_arm_enabled", False)), wl)
+
+    # PS-262: an armed recipe that will not lint falls back at pre-config
+    rec = getattr(armer, "recipe", None) if armer is not None else None
+    if isinstance(rec, dict) and rec.get("id") and rec.get("status") == "armed":
+        at = str((getattr(armer, "plan", None) or {}).get("dusk_utc") or "")
+        if at and not at.endswith("Z"):
+            at += "Z"
+
+        def _build_recipe():
+            from photonscript.scheduler.routers.sideload import build_rc16
+            return build_rc16(rec["id"], (), at, rec.get("opts") or {})
+        built, err = await _guard("recipe", _build_recipe, 180)
+        rows.append(recipe_row(rec, built, err))
 
     order = {s: i for i, s in enumerate(SECTIONS)}
     rows.sort(key=lambda r: (order.get(r["section"], 99), STATUS_RANK.get(r["status"], 9)))
