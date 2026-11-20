@@ -606,16 +606,45 @@ def broadband_moonless_s(mw: dict | None, dark_start: datetime,
     target on a promoted "NB" night (fit_moon_tag), so it does not book the
     whole night against remaining_hours and starve the narrowband targets
     that use the moonlit part."""
+    win = broadband_moonless_window(mw, dark_start, dark_end)
+    if win is None:
+        return None
+    return max(0.0, (win[1] - win[0]).total_seconds())
+
+
+def broadband_moonless_window(mw: dict | None, dark_start: datetime,
+                              dark_end: datetime):
+    """(start, end) of tonight's moonless dark time (broadband_moonless_s),
+    or None when there is no such cap."""
     if not mw or not mw.get("available"):
         return None
     from photonscript.scheduler.moon import broadband_from
     bb_from = broadband_from(mw)
     if bb_from is not None:
-        return max(0.0, (dark_end - max(bb_from, dark_start)).total_seconds())
+        return (max(bb_from, dark_start), dark_end)
     rise = mw.get("rise_utc") if mw.get("down_at_dusk") else None
     if rise is not None:
-        return max(0.0, (min(rise, dark_end) - dark_start).total_seconds())
+        return (dark_start, min(rise, dark_end))
     return None
+
+
+def moonless_overlap_s(vis: dict, win) -> float:
+    """Seconds a target is up (vis rise_time..set_time) inside the moonless
+    window. 2026-11-20: M31, NGC 604 and NGC 891 were each sized to the
+    whole 2.2 h moonless tail although none is up then; they got no window,
+    but the time they booked crowded Elephant Trunk out of the plan."""
+    r, s = vis.get("rise_time"), vis.get("set_time")
+    if win is None or r is None or s is None:
+        return 0.0
+    try:
+        return max(0.0, (min(s, win[1]) - max(r, win[0])).total_seconds())
+    except TypeError:   # naive vs aware: compare as naive UTC
+        def _n(t):
+            from datetime import timezone
+            return (t.astimezone(timezone.utc).replace(tzinfo=None)
+                    if t.tzinfo is not None else t)
+        r, s, w0, w1 = _n(r), _n(s), _n(win[0]), _n(win[1])
+        return max(0.0, (min(s, w1) - max(r, w0)).total_seconds())
 
 
 def _deep_moon(config, date_utc: datetime) -> dict:
@@ -845,7 +874,7 @@ def plan_night_sequence(
     # The moon tag for fitting: an "NB" night the shared rule does not defer
     # (e.g. the moon sets before dawn) keeps its broadband-only targets for
     # the moonless part
-    fit_tag, bb_cap_s = moon_tag, None
+    fit_tag, bb_cap_s, bb_win = moon_tag, None, None
     if moon_tag == "NB":
         if _gen_moon is None:
             try:
@@ -857,6 +886,7 @@ def plan_night_sequence(
         fit_tag = fit_moon_tag(moon_tag, _gen_moon)
         if fit_tag != moon_tag:
             bb_cap_s = broadband_moonless_s(_gen_moon, dark_start, dark_end)
+            bb_win = broadband_moonless_window(_gen_moon, dark_start, dark_end)
             from photonscript.scheduler.moon import describe_moon
             logger.info("Moon-aware planning: NB night but broadband is not "
                         "deferred all night (%s): fitting as %s",
@@ -925,10 +955,20 @@ def plan_night_sequence(
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
-        if bb_cap_s is not None and all(e.filter_type.value not in _NB_FILTERS
-                                        for e in remaining_exposures):
-            # promoted NB night: broadband-only fits the moonless part only
-            available_seconds = min(available_seconds, bb_cap_s * 0.85)
+        bb_only = bb_cap_s is not None and all(
+            e.filter_type.value not in _NB_FILTERS for e in remaining_exposures)
+        if bb_only:
+            # promoted NB night: a broadband-only target fits the moonless
+            # time it is up for, out of what the broadband targets before it
+            # left (one shared moonless tail)
+            usable_s = min(moonless_overlap_s(vp["visibility"], bb_win), bb_cap_s)
+            if usable_s < 0.5 * 3600:
+                logger.info("Skipping %s tonight: broadband-only and up for "
+                            "%.1f h of the moonless time left",
+                            proj.target.name, usable_s / 3600)
+                skipped[proj.target.name] = "broadband deferred by the moon"
+                continue
+            available_seconds = min(available_seconds, usable_s * 0.85)
         ha_min_s = 0.0 if nb_off else ha_first_seconds(proj, config)
         if ha_min_s > 0:
             # Ha first (two-rig NB blend): RC16 Ha until the goal holds
@@ -978,6 +1018,8 @@ def plan_night_sequence(
             remaining_hours -= min(vis_hours, need_s / 3600)
         else:
             remaining_hours -= alloc_time * 1.15  # account for overhead
+        if bb_only:
+            bb_cap_s = max(0.0, bb_cap_s - alloc_time * 3600 * 1.15)
 
         seq_target = NinaSequenceTarget(
             name=proj.target.name,

@@ -159,3 +159,18 @@ def test_bb_night_unchanged(tmp_path, monkeypatch):
     ts = tp.plan_night_sequence(_goals(), cfg, PRECONFIG)
     assert sorted(t.name for t in ts) == sorted(GOALS)
     assert calls and set(calls) == {"BB"}
+
+
+def test_moonless_overlap_skips_targets_not_up_after_moonset():
+    """2026-11-20 follow-up: a broadband-only goal that has set before
+    moonset books no moonless time (it crowded Elephant Trunk out)."""
+    from datetime import datetime
+    from photonscript.scheduler.target_planner import moonless_overlap_s
+    win = (datetime(2026, 11, 21, 10, 36), datetime(2026, 11, 21, 12, 26))
+    gone = {"rise_time": datetime(2026, 11, 21, 1, 36),
+            "set_time": datetime(2026, 11, 21, 9, 0)}
+    up = {"rise_time": datetime(2026, 11, 21, 4, 0),
+          "set_time": datetime(2026, 11, 21, 12, 26)}
+    assert moonless_overlap_s(gone, win) == 0.0
+    assert moonless_overlap_s(up, win) == (win[1] - win[0]).total_seconds()
+    assert moonless_overlap_s(up, None) == 0.0
