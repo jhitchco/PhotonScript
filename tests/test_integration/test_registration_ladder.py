@@ -44,9 +44,9 @@ def _functions(src: str) -> dict[str, str]:
 
 
 def _settings(src: str) -> str:
-    """The SA_STRICT / SA_RELAXED var statements."""
+    """The SA_STRICT / SA_RELAXED / SA_NODC var statements."""
     out = []
-    for name in ("SA_STRICT", "SA_RELAXED"):
+    for name in ("SA_STRICT", "SA_RELAXED", "SA_NODC"):
         i = src.index(f"var {name} = ")
         out.append(src[i:src.index("};", i) + 2])
     return "\n".join(out)
@@ -127,9 +127,9 @@ StarAlignment.prototype.executeGlobal = function () {
    var self = this, n = 0;
    CALLS.push({ ref: File.extractName(this.referenceImage), n: this.targets.length,
                 sens: this.sensitivity, layers: this.structureLayers, out: this.outputDirectory,
-                nr: this.noiseReductionFilterRadius || 0 });
+                nr: this.noiseReductionFilterRadius || 0, dc: !!this.distortionCorrection });
    this.targets.forEach(function (t) {
-      if (CAN(self.referenceImage, t[2], self.sensitivity)) {
+      if (CAN(self.referenceImage, t[2], self.sensitivity, self.distortionCorrection)) {
          FS[self.outputDirectory + "/" + File.extractName(t[2]) + "_r.xisf"] = "reg:" + File.extractName(self.referenceImage);
          ++n;
       }
@@ -204,8 +204,9 @@ RES.n = RES.files.length;
 """)
     assert d["res"]["n"] == 10 and d["res"]["selfRef"] == "S/B/cc/B_04_c_cc.xisf"
     assert all(f.startswith("S/B/reg_self/") for f in d["res"]["files"])
-    assert [c["ref"] for c in d["calls"]] == ["L_17_c_cc", "L_17_c_cc", "B_04_c_cc"]
-    assert d["calls"][2]["sens"] == 0.85 and d["calls"][2]["out"] == "S/B/reg_self"
+    assert [c["ref"] for c in d["calls"]] == ["L_17_c_cc", "L_17_c_cc", "L_17_c_cc", "B_04_c_cc"]
+    assert not d["calls"][2]["dc"]                                    # PS-264 pass 2b
+    assert d["calls"][3]["sens"] == 0.85 and d["calls"][3]["out"] == "S/B/reg_self"
 
 
 @pytest.mark.skipif(not NODE, reason="node not on PATH")
@@ -216,14 +217,14 @@ var R = frames("R", 15);
 RES = registerStack("R", R, R[7], R[7], "S/R");
 RES.n = RES.files.length;
 """)
-    assert d["res"]["n"] == 0 and d["res"]["selfRef"] is None and len(d["calls"]) == 2
+    assert d["res"]["n"] == 0 and d["res"]["selfRef"] is None and len(d["calls"]) == 3
     d = _run("""
 function CAN(ref, t, sens) { return ref.indexOf("/G/") >= 0 || parseInt(t.split("_")[1], 10) < 16; }
 var G = frames("G", 30);
 RES = registerStack("G", G, "S/L/cc/L_17_c_cc.xisf", G[3], "S/G");
 RES.n = RES.files.length;
 """)
-    assert d["res"]["n"] == 16 and d["res"]["selfRef"] is None and len(d["calls"]) == 2
+    assert d["res"]["n"] == 16 and d["res"]["selfRef"] is None and len(d["calls"]) == 3
 
 
 @pytest.mark.skipif(not NODE, reason="node not on PATH")
@@ -251,6 +252,42 @@ catch (e) { LOGS.push("THREW " + e.message); }
     assert d["fs"]["O/master/align_B/master_B_ownref.xisf"] == "B-own"
     assert d["calls"][0]["ref"] == "L_17_c_cc"                        # no L master yet: the sub
     assert any(s.startswith("THREW own-reference master could not be aligned") for s in d["logs"])
+
+
+@pytest.mark.skipif(not NODE, reason="node not on PATH")
+def test_stub_m33_p2_distortion_fit_failure_registers_without_it():
+    # PS-264, 2026-11-19 M33 Core P2: with distortion correction on, the
+    # reference's PSF fit found 2 stars and StarAlignment aborted every target
+    d = _run("""
+function CAN(ref, t, sens, dc) { return !dc; }
+var L = frames("L", 49);
+RES = registerStack("L", L, L[34], L[34], "S/L");
+RES.n = RES.files.length;
+""")
+    assert d["res"]["n"] == 49 and d["res"]["selfRef"] is None
+    assert [c["dc"] for c in d["calls"]] == [True, True, False]
+    assert d["calls"][2]["n"] == 49 and d["calls"][2]["layers"] == 6
+    assert any("pass 2b (no distortion correction, shared reference): 49 of 49 recovered" in s
+               for s in d["logs"])
+
+
+@pytest.mark.skipif(not NODE, reason="node not on PATH")
+def test_stub_own_reference_pass_and_align_master_fall_back_without_distortion():
+    d = _run("""
+function CAN(ref, t, sens, dc) { return ref.indexOf("/B/") >= 0 && !dc; }
+var B = frames("B", 10);
+RES = registerStack("B", B, "S/L/cc/L_17_c_cc.xisf", B[4], "S/B");
+RES.n = RES.files.length;
+""")
+    assert d["res"]["n"] == 10 and d["res"]["selfRef"] == "S/B/cc/B_04_c_cc.xisf"
+    assert [(c["ref"], c["dc"]) for c in d["calls"]][-2:] == [("B_04_c_cc", True), ("B_04_c_cc", False)]
+    d = _run("""
+function CAN(ref, t, sens, dc) { return !dc; }
+FS["O/master/master_L.xisf"] = "L"; FS["O/master/master_B.xisf"] = "B-own";
+alignMaster("B", "O/master/master_B.xisf", { file: "S/L/cc/L_17_c_cc.xisf", master: "O/master/master_L.xisf" });
+""")
+    assert d["fs"]["O/master/master_B.xisf"] == "reg:master_L"
+    assert [c["dc"] for c in d["calls"]] == [True, False]
 
 
 # ------------------------------------------------------------ star QA run reference
