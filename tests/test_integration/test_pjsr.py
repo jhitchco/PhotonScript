@@ -78,7 +78,7 @@ def test_rendered_integrate_passes_and_embeds_config():
     assert pjsr.check(out) == []
     assert 'var CONFIG = {' in out and '"optimize": true' in out
     assert "PSFSignalWeight" in out and "WinsorizedSigmaClip" in out and "LocalNormalization" in out
-    assert "distortionCorrection = true" in out
+    assert "SA.distortionCorrection = !opt.noDistortion;" in out   # PS-264: on except SA_NODC
 
 
 def test_rendered_finish_with_solver_block_keeps_include_order(tmp_path):

@@ -334,12 +334,29 @@ function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
 //           reference (relaxed), the master is integrated in that geometry
 //           and then aligned onto the shared reference (alignMaster), so the
 //           mono masters still line up for the color combine
+// PS-264 (2026-11-19 M33 Core P2 rc16, 49 L subs, 9 px FWHM, ecc 0.55):
+// passes 1 and 2 registered 2 of 49 though star QA aligned all of them. With
+// distortionCorrection on, StarAlignment first PSF-fits the REFERENCE stars
+// ("Fitting 40 stars ... 2 star(s) found - need at least 8 stars") and then
+// aborts the whole run, so every target is lost to the reference alone. The
+// same 8 test subs registered 8 of 8 with it off (delta_RMS 0.25..0.36 px).
+//   pass 2b only the frames passes 1 and 2 lost, onto the shared reference,
+//           distortion correction OFF (SA_NODC); a small-field RC needs no
+//           distortion model to stack, and the frames that did register with
+//           it keep theirs. Pass 3 and alignMaster fall back the same way.
 // A 180 deg pier-flip rotation needs no special case: StarAlignment's
 // triangle similarity matching is rotation invariant.
 var SA_STRICT = { name: "strict", sensitivity: CONFIG.cfa ? 0.60 : 0.30, peakResponse: 0.50,
                   structureLayers: 5, noiseReduction: 0, maxStarDistortion: 0 };
 var SA_RELAXED = { name: "relaxed", sensitivity: 0.85, peakResponse: 0.40,
                    structureLayers: 6, noiseReduction: 2, maxStarDistortion: 0.80 };
+var SA_NODC = { name: "no distortion correction", sensitivity: 0.50, peakResponse: 0.50,
+                structureLayers: 6, noiseReduction: 0, maxStarDistortion: 0.90, noDistortion: true };
+// pass 2c: large soft stars (2026-11-19 Pacman narrowband, HFD 10 to 15 px,
+// 50 to 70 stars a frame): 1 of 26 registered with every preset above. A
+// coarser detector (more wavelet layers, noise reduction) finds the stars.
+var SA_SOFT = { name: "large soft stars", sensitivity: 0.30, peakResponse: 0.80,
+                structureLayers: 8, noiseReduction: 4, maxStarDistortion: 0.95, noDistortion: true };
 
 // One StarAlignment run of `targets` onto `refPath`, output into outDir.
 // Returns executeGlobal's result; a throw counts as false. The caller lists
@@ -350,7 +367,7 @@ function starAlignPass(refPath, targets, outDir, opt) {
    SA.targets = targets.map(function (f) { return [true, true, f]; });
    SA.outputDirectory = outDir; ensureDir(SA.outputDirectory);
    SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
-   SA.distortionCorrection = true;
+   SA.distortionCorrection = !opt.noDistortion;
    SA.structureLayers = opt.structureLayers;
    SA.sensitivity = opt.sensitivity;
    SA.peakResponse = opt.peakResponse;
@@ -385,11 +402,29 @@ function registerStack(S, inputs, sharedRef, ownRef, SOUT) {
           (ok2 ? "" : " (StarAlignment returned false)"));
       lost = still;
    }
+   if (lost.length) {
+      var ok2b = starAlignPass(sharedRef, lost, regDir, SA_NODC);
+      var still2 = missingFrom(inputs, regDir);
+      log("[" + S + "] registration pass 2b (no distortion correction, shared reference): " +
+          (lost.length - still2.length) + " of " + lost.length + " recovered" +
+          (ok2b ? "" : " (StarAlignment returned false)"));
+      lost = still2;
+   }
+   if (lost.length) {
+      var ok2c = starAlignPass(sharedRef, lost, regDir, SA_SOFT);
+      var still3 = missingFrom(inputs, regDir);
+      log("[" + S + "] registration pass 2c (large soft stars, shared reference): " +
+          (lost.length - still3.length) + " of " + lost.length + " recovered" +
+          (ok2c ? "" : " (StarAlignment returned false)"));
+      lost = still3;
+   }
    var n = inputs.length - lost.length;
    if ((n < MIN_FRAMES || n < inputs.length / 2) && ownRef && baseOf(ownRef) !== baseOf(sharedRef)) {
       var selfDir = SOUT + "/reg_self";
       clearDir(selfDir);
       var ok3 = starAlignPass(ownRef, inputs, selfDir, SA_RELAXED);
+      var lost3 = missingFrom(inputs, selfDir);
+      if (lost3.length) ok3 = starAlignPass(ownRef, lost3, selfDir, SA_NODC) || ok3;
       var n3 = inputs.length - missingFrom(inputs, selfDir).length;
       log("[" + S + "] registration pass 3 (relaxed, own reference " + File.extractName(ownRef) + "): " +
           n3 + " of " + inputs.length + (ok3 ? "" : " (StarAlignment returned false)") +
@@ -415,6 +450,7 @@ function alignMaster(S, masterPath, reg) {
    if (File.exists(ownPath)) File.remove(ownPath);
    var ok = starAlignPass(target, [masterPath], dir, SA_RELAXED);
    var aligned = dir + "/" + File.extractName(masterPath) + "_r.xisf";
+   if (!File.exists(aligned)) ok = starAlignPass(target, [masterPath], dir, SA_NODC);   // PS-264
    File.move(masterPath, ownPath);
    if (!File.exists(aligned))
       throw new Error("own-reference master could not be aligned to the shared reference " +
