@@ -174,3 +174,27 @@ def test_moonless_overlap_skips_targets_not_up_after_moonset():
     assert moonless_overlap_s(gone, win) == 0.0
     assert moonless_overlap_s(up, win) == (win[1] - win[0]).total_seconds()
     assert moonless_overlap_s(up, None) == 0.0
+
+
+def test_mixed_goal_on_promoted_nb_night_plans_narrowband_only(
+        tmp_path, monkeypatch, caplog):
+    """2026-11-20: M33 Core panels (LRGB + Ha) on an 85% NB night took the
+    promoted NB+OIII tag and filled the leftover with LRGB under the moon.
+    A goal with any narrowband keeps the night's NB tag: narrowband only."""
+    cfg = _cfg(tmp_path)
+    _night(monkeypatch, cfg, _mw(cfg), "NB")
+    p = next(p for p in json.loads(FIX.read_text())
+             if p["target"]["name"] == "Crescent Nebula")
+    p = {**p, "active": True, "priority": 90}
+    mixed = ImagingProject(**p)
+    fs = {e.filter_type.value for e in mixed.exposure_plans}
+    assert fs & {"Ha", "OIII", "SII"} and fs - {"Ha", "OIII", "SII"}, fs
+    for e in mixed.exposure_plans:
+        e.count = e.acquired + 200
+    with caplog.at_level(logging.INFO, "photonscript.scheduler.target_planner"):
+        ts = tp.plan_night_sequence([mixed], cfg, PRECONFIG)
+    by = {t.name: t for t in ts}
+    assert "Crescent Nebula" in by, caplog.text
+    assert by["Crescent Nebula"].exposures
+    assert all(e.filter_type.value in ("Ha", "OIII", "SII")
+               for e in by["Crescent Nebula"].exposures)
