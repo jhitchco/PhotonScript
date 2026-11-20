@@ -352,6 +352,11 @@ var SA_RELAXED = { name: "relaxed", sensitivity: 0.85, peakResponse: 0.40,
                    structureLayers: 6, noiseReduction: 2, maxStarDistortion: 0.80 };
 var SA_NODC = { name: "no distortion correction", sensitivity: 0.50, peakResponse: 0.50,
                 structureLayers: 6, noiseReduction: 0, maxStarDistortion: 0.90, noDistortion: true };
+// pass 2c: large soft stars (2026-11-19 Pacman narrowband, HFD 10 to 15 px,
+// 50 to 70 stars a frame): 1 of 26 registered with every preset above. A
+// coarser detector (more wavelet layers, noise reduction) finds the stars.
+var SA_SOFT = { name: "large soft stars", sensitivity: 0.30, peakResponse: 0.80,
+                structureLayers: 8, noiseReduction: 4, maxStarDistortion: 0.95, noDistortion: true };
 
 // One StarAlignment run of `targets` onto `refPath`, output into outDir.
 // Returns executeGlobal's result; a throw counts as false. The caller lists
@@ -404,6 +409,14 @@ function registerStack(S, inputs, sharedRef, ownRef, SOUT) {
           (lost.length - still2.length) + " of " + lost.length + " recovered" +
           (ok2b ? "" : " (StarAlignment returned false)"));
       lost = still2;
+   }
+   if (lost.length) {
+      var ok2c = starAlignPass(sharedRef, lost, regDir, SA_SOFT);
+      var still3 = missingFrom(inputs, regDir);
+      log("[" + S + "] registration pass 2c (large soft stars, shared reference): " +
+          (lost.length - still3.length) + " of " + lost.length + " recovered" +
+          (ok2c ? "" : " (StarAlignment returned false)"));
+      lost = still3;
    }
    var n = inputs.length - lost.length;
    if ((n < MIN_FRAMES || n < inputs.length / 2) && ownRef && baseOf(ownRef) !== baseOf(sharedRef)) {

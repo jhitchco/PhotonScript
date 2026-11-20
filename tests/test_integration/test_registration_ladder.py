@@ -44,9 +44,9 @@ def _functions(src: str) -> dict[str, str]:
 
 
 def _settings(src: str) -> str:
-    """The SA_STRICT / SA_RELAXED / SA_NODC var statements."""
+    """The SA_STRICT / SA_RELAXED / SA_NODC / SA_SOFT var statements."""
     out = []
-    for name in ("SA_STRICT", "SA_RELAXED", "SA_NODC"):
+    for name in ("SA_STRICT", "SA_RELAXED", "SA_NODC", "SA_SOFT"):
         i = src.index(f"var {name} = ")
         out.append(src[i:src.index("};", i) + 2])
     return "\n".join(out)
@@ -204,9 +204,10 @@ RES.n = RES.files.length;
 """)
     assert d["res"]["n"] == 10 and d["res"]["selfRef"] == "S/B/cc/B_04_c_cc.xisf"
     assert all(f.startswith("S/B/reg_self/") for f in d["res"]["files"])
-    assert [c["ref"] for c in d["calls"]] == ["L_17_c_cc", "L_17_c_cc", "L_17_c_cc", "B_04_c_cc"]
+    assert [c["ref"] for c in d["calls"]] == ["L_17_c_cc"] * 4 + ["B_04_c_cc"]
     assert not d["calls"][2]["dc"]                                    # PS-264 pass 2b
-    assert d["calls"][3]["sens"] == 0.85 and d["calls"][3]["out"] == "S/B/reg_self"
+    assert d["calls"][3]["layers"] == 8                               # pass 2c, soft stars
+    assert d["calls"][4]["sens"] == 0.85 and d["calls"][4]["out"] == "S/B/reg_self"
 
 
 @pytest.mark.skipif(not NODE, reason="node not on PATH")
@@ -217,14 +218,34 @@ var R = frames("R", 15);
 RES = registerStack("R", R, R[7], R[7], "S/R");
 RES.n = RES.files.length;
 """)
-    assert d["res"]["n"] == 0 and d["res"]["selfRef"] is None and len(d["calls"]) == 3
+    assert d["res"]["n"] == 0 and d["res"]["selfRef"] is None and len(d["calls"]) == 4
     d = _run("""
 function CAN(ref, t, sens) { return ref.indexOf("/G/") >= 0 || parseInt(t.split("_")[1], 10) < 16; }
 var G = frames("G", 30);
 RES = registerStack("G", G, "S/L/cc/L_17_c_cc.xisf", G[3], "S/G");
 RES.n = RES.files.length;
 """)
-    assert d["res"]["n"] == 16 and d["res"]["selfRef"] is None and len(d["calls"]) == 3
+    assert d["res"]["n"] == 16 and d["res"]["selfRef"] is None and len(d["calls"]) == 4
+
+
+@pytest.mark.skipif(not NODE, reason="node not on PATH")
+def test_stub_pacman_soft_stars_register_with_the_coarse_detector():
+    # 2026-11-19 Pacman narrowband, HFD 10 to 15 px: only the 8-layer,
+    # noise-reduced detector found the stars (25 of 25 Ha on the real run)
+    d = _run("""
+function CAN(ref, t, sens, dc) { return false; }
+StarAlignment.prototype.executeGlobal = (function (orig) { return function () {
+   var keep = CAN; CAN = function () { return this_layers >= 8; };
+   var this_layers = this.structureLayers; var r = orig.call(this); CAN = keep; return r; }; })(StarAlignment.prototype.executeGlobal);
+var H = frames("H", 26);
+RES = registerStack("H", H, H[12], H[12], "S/H");
+RES.n = RES.files.length;
+""")
+    assert d["res"]["n"] == 26 and d["res"]["selfRef"] is None
+    assert [c["layers"] for c in d["calls"]] == [5, 6, 6, 8]
+    assert d["calls"][3]["nr"] == 4 and not d["calls"][3]["dc"]
+    assert any("pass 2c (large soft stars, shared reference): 26 of 26 recovered" in s
+               for s in d["logs"])
 
 
 @pytest.mark.skipif(not NODE, reason="node not on PATH")
@@ -281,6 +302,7 @@ RES.n = RES.files.length;
 """)
     assert d["res"]["n"] == 10 and d["res"]["selfRef"] == "S/B/cc/B_04_c_cc.xisf"
     assert [(c["ref"], c["dc"]) for c in d["calls"]][-2:] == [("B_04_c_cc", True), ("B_04_c_cc", False)]
+    assert len(d["calls"]) == 6                                       # 1, 2, 2b, 2c, 3, 3b
     d = _run("""
 function CAN(ref, t, sens, dc) { return !dc; }
 FS["O/master/master_L.xisf"] = "L"; FS["O/master/master_B.xisf"] = "B-own";
