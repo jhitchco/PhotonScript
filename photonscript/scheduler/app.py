@@ -3889,6 +3889,8 @@ from photonscript.scheduler.routers import optics_test as _optics_test_router  #
 app.include_router(_optics_test_router.router)
 from photonscript.scheduler.routers import pause as _pause_router  # noqa: E402
 app.include_router(_pause_router.router)   # PS-64
+from photonscript.scheduler.routers import recipe_queue as _recipe_queue_router  # noqa: E402
+app.include_router(_recipe_queue_router.router)   # 2026-11-20: queued arm recipes
 from photonscript.scheduler.routers import where as _where_router  # noqa: E402
 app.include_router(_where_router.router)   # PS-64
 from photonscript.scheduler.routers import sync as _sync_router  # noqa: E402

@@ -752,6 +752,18 @@ class Armer:
         mode = ("guided (PHD2)" if self._use_guiding()
                 else "unguided (TPoint + ProTrack)")
         if not recipe:
+            # 2026-11-20: a recipe queued for this night (POST /api/arm/queue)
+            # rides on whichever arm comes first, the noon auto-arm included
+            try:
+                from photonscript.scheduler import recipe_queue
+                recipe = recipe_queue.take(self.config, self.plan.get("night_of"))
+                if recipe:
+                    logger.info("Arm takes the queued recipe for %s: %s",
+                                self.plan.get("night_of"), recipe["label"])
+            except Exception as e:  # noqa: BLE001 - never fail an arm over it
+                logger.warning("queued recipe not attached: %s", e)
+                recipe = None
+        if not recipe:
             # 2026-10-28: the guided trial night carries the guider
             # commissioning recipe (guider_commission_on_trial_night)
             try:
