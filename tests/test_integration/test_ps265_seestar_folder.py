@@ -327,3 +327,10 @@ def test_folder_packet_names_the_seestar_site_not_aaro(works, tmp_path):
     rows = next((out / "astrobin").glob("*_acquisition.csv")).read_text("ascii").splitlines()[1:]
     assert all(r.split(",")[11] == "" for r in rows)          # bortle unknown, never AARO's 2
     assert rows[0].startswith("2026-10-07,")                   # local evening date, not UTC
+
+
+def test_fits_master_dark_is_saved_as_xisf_first():
+    t = pjsr.template(pjsr.INTEGRATE_TEMPLATE)
+    assert "dark = darkAsXisf(g.dark_file);" in t
+    body = t[t.index("function darkAsXisf("):t.index("function calibrateGroup(")]
+    assert '".xisf"' in body and "/master/darks" in body and "forceClose" in body

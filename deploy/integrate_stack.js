@@ -277,6 +277,30 @@ function integrateFlat(flat, masterBias) {
 
 // ---------------------------------------------------------------- one stack
 
+// PS-265: ImageCalibration (PixInsight 1.9) refuses a FITS master ("The
+// file format (FITS) lacks required capabilities for master calibration
+// frames", 2026-11-21, the Seestar's MasterDark_*.fit). A FITS dark_file is
+// saved once as XISF under out/master/darks and that copy is used; the
+// source file is only read.
+var DARK_XISF = {};
+function darkAsXisf(path) {
+   var ext = File.extractExtension(path).toLowerCase();
+   if (ext === ".xisf") return path;
+   if (DARK_XISF[path]) return DARK_XISF[path];
+   var dir = OUT + "/master/darks";
+   ensureDir(dir);
+   var out = dir + "/" + File.extractName(path) + ".xisf";
+   var ws = ImageWindow.open(path);
+   if (!ws.length) throw new Error("could not open the master dark " + path);
+   try {
+      if (File.exists(out)) File.remove(out);
+      if (!ws[0].saveAs(out, false, false, false, false)) throw new Error("could not write " + out);
+   } finally { for (var i = 0; i < ws.length; ++i) ws[i].forceClose(); }
+   log("master dark " + File.extractName(path) + File.extractExtension(path) + " saved as XISF: " + out);
+   DARK_XISF[path] = out;
+   return out;
+}
+
 function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
    var IC = new ImageCalibration;
    IC.targetFrames = lights.map(function (f) { return [true, f]; });
@@ -285,7 +309,7 @@ function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
       try { if (ImageCalibration.prototype[CONFIG.cfa] !== undefined) IC.cfaPattern = ImageCalibration.prototype[CONFIG.cfa]; } catch (e1) {}
    }
    var bias = masters.bias, dark = g.dark !== null ? masters.darks[String(g.dark)] : null;
-   if (g.dark_file && File.exists(g.dark_file)) dark = g.dark_file;
+   if (g.dark_file && File.exists(g.dark_file)) dark = darkAsXisf(g.dark_file);
    else if (g.dark_file) log("[" + stack.name + " " + g.name + "] dark_file missing: " + g.dark_file + " (no dark)");
    var flat = masters.flats[stack.filter] || null;
    if (!bias && !dark && !flat) {
