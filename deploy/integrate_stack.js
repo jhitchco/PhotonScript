@@ -20,6 +20,16 @@
 //     never to equal weights; mono stacks hold one length each) and
 //     Winsorized sigma clipping -> master_<stack>.xisf (+ masterOSC.xisf for
 //     an OSC stack) and a review jpg
+// PS-265 (Seestar S50 Pro, plain folder input): a group with no bias, no
+// dark and no flat skips ImageCalibration (lights straight to
+// CosmeticCorrection); a group may carry dark_file (a ready master dark,
+// used as is); CONFIG.rejection "esd" picks Generalized ESD; CONFIG.drizzle
+// (scale, 0 = off) makes StarAlignment write drizzle data, ImageIntegration
+// update it and DrizzleIntegration write master_<stack>_drizzle<N>x.xisf
+// (out/master/drizzle, outside out/master itself); CONFIG.prune removes a
+// stack's own intermediates once they are no longer needed (cc after
+// debayer, the rest once the masters are saved), so a 1500 sub OSC stack
+// fits on the disk.
 // Funnel checks: a stage may drop frames but never add them; every dropped
 // frame is logged as "DROPPED at <stage>: <file>" (the packet reads these).
 // One stack that cannot be made (fewer than MIN_FRAMES registered frames, a
@@ -275,7 +285,17 @@ function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
       try { if (ImageCalibration.prototype[CONFIG.cfa] !== undefined) IC.cfaPattern = ImageCalibration.prototype[CONFIG.cfa]; } catch (e1) {}
    }
    var bias = masters.bias, dark = g.dark !== null ? masters.darks[String(g.dark)] : null;
+   if (g.dark_file && File.exists(g.dark_file)) dark = g.dark_file;
+   else if (g.dark_file) log("[" + stack.name + " " + g.name + "] dark_file missing: " + g.dark_file + " (no dark)");
    var flat = masters.flats[stack.filter] || null;
+   if (!bias && !dark && !flat) {
+      // PS-265: lights only (Seestar). Nothing to subtract or divide, so the
+      // raw lights go straight to CosmeticCorrection (an ImageCalibration
+      // with every master off would only add a pedestal and a copy).
+      log("[" + stack.name + " " + g.name + "] no bias, dark or flat: " + lights.length +
+          " lights go uncalibrated to CosmeticCorrection");
+      return lights.slice(0);
+   }
    IC.masterBiasEnabled = !!bias;
    if (bias) IC.masterBiasPath = bias;
    IC.masterDarkEnabled = !!dark;
@@ -283,8 +303,8 @@ function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
       IC.masterDarkPath = dark;
       // the master dark is a raw integration (bias inside): subtract the bias
       // from it first, which dark scaling needs
-      IC.calibrateDark = !!bias;
-      IC.optimizeDarks = !!(g.optimize && bias);
+      IC.calibrateDark = !!bias && !g.dark_file;
+      IC.optimizeDarks = !!(g.optimize && bias && !g.dark_file);
    }
    IC.masterFlatEnabled = !!flat;
    if (flat) {
@@ -298,7 +318,7 @@ function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
    IC.outputDirectory = SOUT + "/cal"; ensureDir(IC.outputDirectory);
    IC.outputExtension = ".xisf"; IC.overwriteExistingFiles = true;
    log("[" + stack.name + " " + g.name + "] calibrate " + lights.length + " lights: " +
-       (bias ? "bias" : "no bias") + " + " + (dark ? ("dark " + g.dark + " s" + (IC.optimizeDarks ? " (optimizeDarks)" : "")) : "no dark") +
+       (bias ? "bias" : "no bias") + " + " + (dark ? ("dark " + (g.dark_file ? File.extractName(g.dark_file) : g.dark + " s") + (IC.optimizeDarks ? " (optimizeDarks)" : "")) : "no dark") +
        " + " + (flat ? "flat" : "no flat") + ", pedestal " + CONFIG.pedestal + " DN");
    if (!IC.executeGlobal()) throw new Error("calibration failed for " + stack.name + " " + g.name);
    var made = [];
@@ -351,6 +371,7 @@ function starAlignPass(refPath, targets, outDir, opt) {
    SA.outputDirectory = outDir; ensureDir(SA.outputDirectory);
    SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
    SA.distortionCorrection = true;
+   if (CONFIG.drizzle && !opt.noDrizzle) { try { SA.generateDrizzleData = true; } catch (e0) {} }
    SA.structureLayers = opt.structureLayers;
    SA.sensitivity = opt.sensitivity;
    SA.peakResponse = opt.peakResponse;
@@ -389,7 +410,10 @@ function registerStack(S, inputs, sharedRef, ownRef, SOUT) {
    if ((n < MIN_FRAMES || n < inputs.length / 2) && ownRef && baseOf(ownRef) !== baseOf(sharedRef)) {
       var selfDir = SOUT + "/reg_self";
       clearDir(selfDir);
-      var ok3 = starAlignPass(ownRef, inputs, selfDir, SA_RELAXED);
+      var ok3 = starAlignPass(ownRef, inputs, selfDir, { name: SA_RELAXED.name, sensitivity: SA_RELAXED.sensitivity,
+                     peakResponse: SA_RELAXED.peakResponse, structureLayers: SA_RELAXED.structureLayers,
+                     noiseReduction: SA_RELAXED.noiseReduction, maxStarDistortion: SA_RELAXED.maxStarDistortion,
+                     noDrizzle: true });
       var n3 = inputs.length - missingFrom(inputs, selfDir).length;
       log("[" + S + "] registration pass 3 (relaxed, own reference " + File.extractName(ownRef) + "): " +
           n3 + " of " + inputs.length + (ok3 ? "" : " (StarAlignment returned false)") +
@@ -413,7 +437,10 @@ function alignMaster(S, masterPath, reg) {
    // outside out/master itself: blend.masters() globs master_*.xisf there
    var ownPath = dir + "/master_" + S + "_ownref.xisf";
    if (File.exists(ownPath)) File.remove(ownPath);
-   var ok = starAlignPass(target, [masterPath], dir, SA_RELAXED);
+   var ok = starAlignPass(target, [masterPath], dir, { name: SA_RELAXED.name, sensitivity: SA_RELAXED.sensitivity,
+                     peakResponse: SA_RELAXED.peakResponse, structureLayers: SA_RELAXED.structureLayers,
+                     noiseReduction: SA_RELAXED.noiseReduction, maxStarDistortion: SA_RELAXED.maxStarDistortion,
+                     noDrizzle: true });
    var aligned = dir + "/" + File.extractName(masterPath) + "_r.xisf";
    File.move(masterPath, ownPath);
    if (!File.exists(aligned))
@@ -423,6 +450,53 @@ function alignMaster(S, masterPath, reg) {
    File.move(aligned, masterPath);
    log("[" + S + "] master aligned onto the shared reference " + File.extractName(target) +
        " (own-reference master kept as " + File.extractName(ownPath) + ".xisf)");
+}
+
+// PS-265: DrizzleIntegration from the drizzle data ImageIntegration just
+// updated (rejection + weights) and the LocalNormalization maps. Optional:
+// any failure is logged and the plain master stands.
+function drizzleStack(S, drzFiles, lnData) {
+   var scale = Number(CONFIG.drizzle) || 2;
+   TSTART(S, "drizzle integration");
+   try {
+      var DI = new DrizzleIntegration;
+      DI.inputData = drzFiles.map(function (x, i) { return [true, x, lnData ? lnData[i] : ""]; });
+      DI.scale = scale;
+      DI.dropShrink = Number(CONFIG.drizzle_drop_shrink) || 0.90;
+      try { DI.kernelFunction = DrizzleIntegration.prototype.Kernel_Square; } catch (e1) {}
+      try { DI.enableCFA = false; } catch (e2) {}
+      try { DI.enableRejection = true; } catch (e3) {}
+      try { DI.enableImageWeighting = true; } catch (e4) {}
+      try { DI.enableSurfaceSplines = true; } catch (e5) {}
+      try { DI.enableLocalNormalization = !!lnData; } catch (e6) {}
+      try { DI.closePreviousImages = false; } catch (e7) {}
+      log("[" + S + "] drizzle " + scale + "x from " + drzFiles.length + " frames, drop shrink " + DI.dropShrink +
+          (lnData ? ", LocalNormalization" : ""));
+      if (!DI.executeGlobal()) throw new Error("DrizzleIntegration returned false");
+      var w = ImageWindow.windowById(DI.integrationImageId);
+      if (w.isNull) w = ImageWindow.windowById("drizzle_integration");
+      if (w.isNull) throw new Error("no drizzle_integration window");
+      var dir = OUT + "/master/drizzle";
+      ensureDir(dir);
+      var path = dir + "/master_" + S + "_drizzle" + scale + "x.xisf";
+      if (File.exists(path)) File.remove(path);
+      w.saveAs(path, false, false, false, false);
+      log("[" + S + "] drizzle master saved: " + path + " (" + w.mainView.image.width + " x " + w.mainView.image.height + ")");
+      try {
+         cropBorders(w.mainView, 0.015);
+         autoStretch(w.mainView);
+         w.saveAs(dir + "/master_" + S + "_drizzle" + scale + "x_review.jpg", false, false, false, false);
+      } catch (e8) { log("[" + S + "] drizzle review jpg skipped (" + e8 + ")"); }
+      w.forceClose();
+      try { var ww = ImageWindow.windowById(DI.weightImageId); if (!ww.isNull) ww.forceClose(); } catch (e9) {}
+      return path;
+   } catch (e) {
+      log("[" + S + "] drizzle skipped (" + ("" + e).replace(/^Error: /, "") + "); master_" + S + " stands");
+      ["drizzle_integration", "drizzle_weights"].forEach(function (id) {
+         try { var x = ImageWindow.windowById(id); if (!x.isNull) x.forceClose(); } catch (e2) {}
+      });
+      return null;
+   } finally { TEND(S, "drizzle integration"); }
 }
 
 // OSC core combine, 2026-10-14 (photonscript/integration/osc_hdr.py): a
@@ -507,19 +581,21 @@ function runStack(stack, masters, reg) {
    if (!all.length) { log("[" + S + "] no lights"); TEND(S, "stack total"); return null; }
 
    var scalingCsv = ["stack,group,file,k0,k1,k2"];
-   var nBefore = 0;
+   var nBefore = 0, uncal = [];
    for (var g = 0; g < stack.groups.length; ++g) {
       if (!byGroup[g].length) continue;
       TSTART(S, "calibration " + stack.groups[g].name);
       var made = calibrateGroup(stack, stack.groups[g], byGroup[g], masters, SOUT, scalingCsv);
       TEND(S, "calibration " + stack.groups[g].name);
+      assertFunnel("calibration " + stack.groups[g].name + " (outputData)", byGroup[g].length, made.length);
+      if (made.length && made[0] === byGroup[g][0]) { uncal = uncal.concat(made); continue; }
       var nNow = listFits(SOUT + "/cal").length;
       assertFunnel("calibration " + stack.groups[g].name, byGroup[g].length, nNow - nBefore);
-      assertFunnel("calibration " + stack.groups[g].name + " (outputData)", byGroup[g].length, made.length);
       nBefore = nNow;
    }
    writeText(SOUT + "/dark_scaling.csv", scalingCsv);
-   var work = listFits(SOUT + "/cal");
+   var work = listFits(SOUT + "/cal").concat(uncal);
+   work.sort();
    assertFunnel("calibration", all.length, work.length);
    logDrops("calibration", all, work);
    log("[" + S + "] stage calibration: " + all.length + " in -> " + work.length + " out (" + groupCounts(stack, work) + ")");
@@ -557,6 +633,7 @@ function runStack(stack, masters, reg) {
       logDrops("debayer", ccFiles, rgbFiles);
       log("[" + S + "] stage debayer: " + ccFiles.length + " in -> " + rgbFiles.length + " out");
       TEND(S, "debayer");
+      if (CONFIG.prune) log("[" + S + "] pruned " + clearDir(SOUT + "/cc") + " cosmetic-corrected frames (debayered copies kept)");
    }
 
    // one registration reference for every stack, so mono masters align.
@@ -640,9 +717,26 @@ function runStack(stack, masters, reg) {
 
    TSTART(S, "integration");
    var rej = regFiles.length >= 15 ? "WinsorizedSigmaClip" : (regFiles.length >= 6 ? "SigmaClip" : "PercentileClip");
+   if (CONFIG.rejection === "esd" && regFiles.length >= 15) {
+      if (ImageIntegration.prototype.Rejection_ESD !== undefined) rej = "Rejection_ESD";
+      else log("[" + S + "] Generalized ESD not in this PixInsight; " + rej);
+   }
+   // PS-265 drizzle: StarAlignment wrote <frame>.xdrz beside each registered
+   // frame (shared reference only, never the pass 3 own-reference frames)
+   var drzFiles = null;
+   if (CONFIG.drizzle && !R.selfRef) {
+      drzFiles = regFiles.map(function (f) { return File.changeExtension(f, ".xdrz"); });
+      var nDrz = 0;
+      for (var i = 0; i < drzFiles.length; ++i) if (File.exists(drzFiles[i])) ++nDrz;
+      if (nDrz < regFiles.length) {
+         log("[" + S + "] drizzle off: " + (regFiles.length - nDrz) + " of " + regFiles.length + " frames have no drizzle data");
+         drzFiles = null;
+      }
+   } else if (CONFIG.drizzle) log("[" + S + "] drizzle off: frames registered onto the stack's own reference");
    function makeII(psf) {
       var II = new ImageIntegration;
-      II.images = regFiles.map(function (f, i) { return [true, f, "", lnData ? lnData[i] : ""]; });
+      II.images = regFiles.map(function (f, i) { return [true, f, drzFiles ? drzFiles[i] : "", lnData ? lnData[i] : ""]; });
+      if (drzFiles) II.generateDrizzleData = true;
       II.combination = ImageIntegration.prototype.Average;
       II.weightMode = psf ? ImageIntegration.prototype.PSFSignalWeight
                           : (stack.mixed_exposures ? ImageIntegration.prototype.ExposureTimeWeight
@@ -661,7 +755,8 @@ function runStack(stack, masters, reg) {
       return II;
    }
    log("[" + S + "] integrating " + regFiles.length + " frames (" + groupCounts(stack, regFiles) + "), " +
-       (lnData ? "LocalNormalization" : "AdditiveWithScaling") + ", PSFSignalWeight, " + rej);
+       (lnData ? "LocalNormalization" : "AdditiveWithScaling") + ", PSFSignalWeight, " + rej +
+       (drzFiles ? ", drizzle data" : ""));
    var II = makeII(true), ok = false;
    try { ok = II.executeGlobal(); } catch (e) { log("[" + S + "] PSF Signal Weight integration failed (" + e + ")"); }
    if (!ok) {
@@ -708,6 +803,17 @@ function runStack(stack, masters, reg) {
    w.forceClose();
    TEND(S, "review jpg");
    if (stack.short_subset) integrateShort(stack, regAll, R.selfRef);
+   if (drzFiles) drizzleStack(S, drzFiles, lnData);
+   if (CONFIG.prune) {
+      // the master (and the drizzle master) are written: the stack's big
+      // intermediates go (logs, weights, drizzle and LN data stay)
+      var pr = 0;
+      ["reg", "reg_self", "debayer", "cc", "cal"].forEach(function (d) {
+         var fs = searchDirectory(SOUT + "/" + d + "/*.xisf", false);
+         for (var i = 0; i < fs.length; ++i) { File.remove(fs[i]); ++pr; }
+      });
+      log("[" + S + "] pruned " + pr + " intermediate frames (master saved)");
+   }
    log("[" + S + "] funnel " + all.length + " staged -> " + work.length + " cal -> " + ccFiles.length + " cc -> " +
        rgbFiles.length + (CONFIG.cfa ? " debayer -> " : " -> ") + nReg + " reg -> " + regFiles.length + " integrated");
    TEND(S, "stack total");

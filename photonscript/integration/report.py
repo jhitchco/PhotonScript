@@ -52,6 +52,8 @@ def post_ledger(path: Path, base_url: str, *, post=http_post_json,
     if not base_url:
         return {"ok": False, "status": 0, "detail": "no scheduler URL (integration_report_url)"}
     led = L.load(path)
+    if led.rig in L.LOCAL_RIGS:
+        return {"ok": False, "status": -1, "detail": f"{led.rig} ledgers stay local (PS-265)"}
     url = base_url.rstrip("/") + "/api/integrations"
     try:
         status, body = post(url, led.dump(), timeout)
@@ -74,7 +76,7 @@ def pending(staging_root: Path, scratch_root: Path | None = None) -> list[Path]:
     only: a PS-153 blend ledger is a desktop record, never posted). The
     fast scratch root counts too (a run whose archive step did not finish)."""
     return [f for f, led in writer.local_ledgers(staging_root, scratch_root)
-            if not led.reported and led.kind == "integration"]
+            if not led.reported and led.kind == "integration" and led.rig not in L.LOCAL_RIGS]
 
 
 def sweep(staging_root: Path, base_url: str, *, post=http_post_json, echo=print,

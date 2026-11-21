@@ -176,7 +176,8 @@ def from_header(path, hdr, *, kind: str | None = None, tz: str = "America/Denver
         gain=_i(get("GAIN")), offset=_i(get("OFFSET")),
         set_temp=_f(get("SET-TEMP")), ccd_temp=_f(get("CCD-TEMP")),
         readout=ro, readout_raw=ro_raw or "",
-        instrument=_s(get("INSTRUME")), filter=filt,
+        # PS-265: the Seestar writes no INSTRUME / SWCREATE, only CREATOR
+        instrument=_s(get("INSTRUME")) or _s(get("CREATOR")), filter=filt,
         xbin=_i(get("XBINNING")) or 1, bayer=bayer,
         date_obs=date_obs, date_loc=date_loc,
         night=night_of(date_loc, date_obs, tz),
@@ -184,7 +185,7 @@ def from_header(path, hdr, *, kind: str | None = None, tz: str = "America/Denver
         foctemp=_f(get("FOCTEMP")), focpos=_focpos(hdr),
         focallen=_f(get("FOCALLEN")),
         focratio=_f(get("FOCRATIO")), pixel_um=_f(get("XPIXSZ")),
-        telescope=_s(get("TELESCOP")), software=_s(get("SWCREATE")),
+        telescope=_s(get("TELESCOP")), software=_s(get("SWCREATE")) or _s(get("CREATOR")),
         site_lat=_f(get("SITELAT")), site_lon=_f(get("SITELONG")),
         site_elev=_f(get("SITEELEV")),
         ra_deg=ra, dec_deg=dec,

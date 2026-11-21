@@ -51,7 +51,8 @@ from photonscript.integration.pipeline import PipelineError, Timer, catalog_coor
 
 FINISH_DIR = "Finish"
 SCRIPT = "finish_run.js"
-RIG_OPTICS = {"piggyback": (600.0, 3.76), "rc16": (3248.0, 3.76)}   # focal mm, pixel um
+RIG_OPTICS = {"piggyback": (600.0, 3.76), "rc16": (3248.0, 3.76),   # focal mm, pixel um
+              "seestar": (260.0, 2.9)}                            # PS-265 Seestar S50 Pro
 
 
 class FinishError(PipelineError):
@@ -255,9 +256,12 @@ def run(o: Options, echo=print) -> dict:
     with pilock.job(f"finish {o.name or Path(o.master).name}", enabled=o.run_pixinsight and not o.dry_run,
                     wait_min=o.lock_wait_min, echo=echo):
         res = _run(o, echo)
-    # progression sheet (progression.py): guarded, never fails the run
-    from photonscript.integration import progression
-    progression.after_run(res, o.staging_root, echo)
+    # progression sheet (progression.py): guarded, never fails the run; not
+    # for a local-only rig (PS-265: the Seestar is not the AARO campaign)
+    from photonscript.shared.ledger import LOCAL_RIGS
+    if str(res.get("rig") or o.rig or "") not in LOCAL_RIGS:
+        from photonscript.integration import progression
+        progression.after_run(res, o.staging_root, echo)
     return res
 
 
@@ -402,9 +406,12 @@ def run_mono_color(o: Options, echo=print) -> dict:
     with pilock.job(f"finish --mono-run {Path(o.mono_run).name if o.mono_run else '?'}",
                     enabled=o.run_pixinsight and not o.dry_run, wait_min=o.lock_wait_min, echo=echo):
         res = _run_mono_color(o, echo)
-    # progression sheet (progression.py): guarded, never fails the run
-    from photonscript.integration import progression
-    progression.after_run(res, o.staging_root, echo)
+    # progression sheet (progression.py): guarded, never fails the run; not
+    # for a local-only rig (PS-265: the Seestar is not the AARO campaign)
+    from photonscript.shared.ledger import LOCAL_RIGS
+    if str(res.get("rig") or o.rig or "") not in LOCAL_RIGS:
+        from photonscript.integration import progression
+        progression.after_run(res, o.staging_root, echo)
     return res
 
 

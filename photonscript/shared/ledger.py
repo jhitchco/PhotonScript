@@ -65,6 +65,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Ledger rigs. PS-265: "seestar" (a ZWO Seestar S50 Pro, plain folder input)
+# is a desktop record only: never posted to the scheduler, never retried by
+# autointegrate (LOCAL_RIGS).
+RIGS = ("piggyback", "rc16", "seestar")
+LOCAL_RIGS = frozenset({"seestar"})
+
+
 class Ask(BaseModel):
     model_config = ConfigDict(extra="allow")
     id: str = ""
@@ -133,7 +140,7 @@ class Ledger(BaseModel):
     @classmethod
     def _rig(cls, v: str) -> str:
         v = str(v or "").strip().lower()
-        if v not in ("piggyback", "rc16"):
+        if v not in RIGS:
             raise ValueError(f"unknown rig {v!r}")
         return v
 

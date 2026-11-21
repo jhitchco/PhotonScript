@@ -5152,6 +5152,27 @@ def integrate_cmd(
     report: bool = typer.Option(True, "--report/--no-report",
                                 help="Post the run's ledger to the scheduler (PS-33; queued when unreachable)"),
     report_url: str = typer.Option("", "--report-url", help="Scheduler (default integration_report_url)"),
+    inputs: List[str] = typer.Option([], "--input",
+                                     help="PS-265: a plain folder of lights instead of the Library "
+                                          "(repeatable; read-only; e.g. a Seestar MyWorks/<target>_sub; "
+                                          "the ledger is not posted)"),
+    pattern: str = typer.Option("Light_*.fit", "--pattern", help="With --input: which files are lights"),
+    seestar: bool = typer.Option(False, "--seestar",
+                                 help="PS-265 Seestar S50 Pro profile for --input: rig 'seestar', drizzle 2x, "
+                                      "Generalized ESD, --prune, f/5, mixed sub lengths in one stack "
+                                      "(no HDR short set)"),
+    master_darks: List[str] = typer.Option([], "--master-dark",
+                                           help="With --input: EXP=FILE, a ready master dark for the EXP s "
+                                                "lights, used as is (repeatable)"),
+    drizzle: int = typer.Option(-1, "--drizzle", help="DrizzleIntegration scale (0 = off; --seestar: 2)"),
+    rejection: str = typer.Option("", "--rejection", help="esd = Generalized ESD (--seestar default)"),
+    prune: Optional[bool] = typer.Option(None, "--prune/--no-prune",
+                                         help="Remove each stack's intermediates once its master is saved "
+                                              "(--seestar default on)"),
+    focratio: float = typer.Option(0.0, "--focratio", help="f-ratio for lights without FOCRATIO (--seestar: 5)"),
+    pi_timeout_h: float = typer.Option(0.0, "--pi-timeout-h",
+                                       help="Longest one PixInsight launch may run, hours (default 6; "
+                                            "--seestar: 16, a 2000 sub drizzle stack)"),
 ):
     """PS-22: stack a target from the PhotonScript library (desktop).
 
@@ -5191,6 +5212,46 @@ def integrate_cmd(
         kw["mono_color"] = mono_color
     if pointing:
         kw["pointing_check"] = pointing.strip().lower()
+    if seestar and not inputs:
+        console.print("[red]integrate:[/red] --seestar needs --input", markup=True)
+        raise typer.Exit(2)
+    if inputs:
+        # PS-265: plain folder input; the Library is not read
+        darks = {}
+        for md in master_darks:
+            e, _, fpath = md.partition("=")
+            try:
+                darks[round(float(e.strip().rstrip("s")), 2)] = fpath.strip()
+            except ValueError:
+                console.print(f"[red]integrate:[/red] --master-dark wants EXP=FILE, not {md!r}", markup=True)
+                raise typer.Exit(2)
+            if not Path(fpath.strip()).is_file():
+                console.print(f"[red]integrate:[/red] master dark not found: {fpath}", markup=True)
+                raise typer.Exit(2)
+        kw.update(source_dirs=[Path(i) for i in inputs], source_pattern=pattern, dark_files=darks)
+        if seestar:
+            rig = "seestar" if rig == "piggyback" else rig
+            kw.update(rig_label="ZWO Seestar S50 Pro", osc_hdr_set_max_s=0.0, focratio=5.0,
+                      drizzle=2, rejection="esd", prune=True, pi_timeout_h=16.0)
+            if hdr is None:
+                kw["osc_hdr_core"] = False
+        # another telescope's subs are not the AARO campaign: the ledger stays
+        # local (never posted to the scheduler)
+        report = False
+        if drizzle >= 0:
+            kw["drizzle"] = drizzle
+        if rejection:
+            kw["rejection"] = rejection.strip().lower()
+        if prune is not None:
+            kw["prune"] = prune
+        if focratio > 0:
+            kw["focratio"] = focratio
+    if pi_timeout_h > 0:
+        kw["pi_timeout_h"] = pi_timeout_h
+    if not inputs and (master_darks or drizzle > 0 or rejection or prune):
+        console.print("[red]integrate:[/red] --master-dark, --drizzle, --rejection and --prune need --input "
+                      "(PS-265)", markup=True)
+        raise typer.Exit(2)
     opts = pl.Options(
         target=target, rig=rig, since=since, until=until,
         staging_root=root, out=Path(out) if out else None,
@@ -5585,6 +5646,40 @@ def finish_cmd(
         print(_json.dumps(res, indent=1, default=str))
     ok = res.get("finish", {}).get("ok", True) and res.get("color", {}).get("ok", True)
     raise typer.Exit(0 if ok else 1)
+
+
+@app.command("osc-split")
+def osc_split_cmd(
+    run: str = typer.Option(..., "--run", help="A plain-folder (Seestar) integrate run folder (only read)"),
+    hoo: str = typer.Option("", "--hoo", help="Dual-band stack -> master_Ha (R) + master_OIII ((G+B)/2), e.g. LP"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+    rgb: str = typer.Option("", "--rgb", help="Broadband stack -> master_R / _G / _B, e.g. IRCUT"),
+    out: str = typer.Option("", "--out", help="NEW folder (default <staging-root>/<run>_split)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
+):
+    """PS-265: split an OSC run's masters (the drizzle masters when there are
+    some) into mono masters for the color combine: --hoo LP gives master_Ha
+    and master_OIII, --rgb IRCUT gives master_R / G / B, in a NEW folder.
+    Then `photonscript finish --mono-run <that folder> --rig seestar` makes
+    the HOO image with RGB stars (the command is printed).
+
+    photonscript osc-split --run I:/Astrophotography/Staging/NGC_281_seestar_20261121-1200 --hoo LP --rgb IRCUT
+    """
+    from photonscript.integration import osc_split as osp
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration.runner import PixInsightBusy
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    try:
+        res = osp.run(Path(run), hoo=hoo, rgb=rgb, out=Path(out) if out else None, staging_root=root,
+                      exe=pixinsight_exe, run_pixinsight=pixinsight, lock_wait_min=_pilock_wait(cfg), echo=say)
+    except (osp.SplitError, PixInsightBusy, FileNotFoundError) as e:
+        console.print(f"[red]osc-split:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+    say(f"split folder: {res['split_dir']}")
+    raise typer.Exit(0 if res.get("ok") in (True, None) else 1)
 
 
 @app.command("pixinsight-gaia-check")

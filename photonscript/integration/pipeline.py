@@ -55,7 +55,7 @@ from pathlib import Path
 from photonscript.integration import (astrobin, calib, hdr, manifest, mono_color, osc_hdr, pilock,
                                       pjsr, pointing_check, runner, scratch, star_qa)
 from photonscript.integration.frames import Frame
-from photonscript.integration.select import Selection, select_lights
+from photonscript.integration.select import Selection, select_folders, select_lights
 
 PEDESTAL_DN = 1000
 QA_MODES = ("apply", "report", "off")
@@ -125,6 +125,19 @@ class Options:
                                       # clipped nucleus of master_OSC replaced from it (osc_hdr.py)
     osc_hdr_short_max_s: float = 180.0   # integrate_osc_hdr_short_max_s: the short set of that combine
     osc_hdr_set_max_s: float = 30.0   # integrate_osc_hdr_set_max_s: Piggy HDR short set, never in master_OSC
+    # PS-265: plain folder input (Seestar S50 Pro) instead of the Library
+    source_dirs: list[Path] | None = None   # --input DIR (repeatable): lights from these folders
+    source_pattern: str = "Light_*.fit"     # --pattern: which files in them are lights
+    dark_files: dict = field(default_factory=dict)   # exposure s -> ready master dark (--master-dark)
+    drizzle: int = 0                  # --drizzle N: DrizzleIntegration N x (0 = off)
+    rejection: str = ""               # --rejection esd: Generalized ESD (else Winsorized / sigma)
+    prune: bool = False               # --prune: drop each stack's intermediates once its master is saved
+    focratio: float | None = None     # f-ratio for lights whose header has none (packet, AstroBin CSV)
+    pi_timeout_h: float = 6.0         # --pi-timeout-h: one PixInsight launch may run this long
+
+    @property
+    def folder_mode(self) -> bool:
+        return bool(self.source_dirs)
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -218,13 +231,16 @@ def is_inside(path: Path, root: Path) -> bool:
         return False
 
 
-def copy_into(src: Path, dest_dir: Path, library: Path) -> Path:
-    """Copy one frame into the staging run (never into the Library)."""
+def copy_into(src: Path, dest_dir: Path, library: Path, name: str = "",
+              protect: list[Path] | None = None) -> Path:
+    """Copy one frame into the staging run (never into the Library, nor
+    into any `protect` folder: the PS-265 input folders)."""
     dest_dir = Path(dest_dir)
-    if is_inside(dest_dir, library):
-        raise PipelineError(f"refusing to write inside the Library mirror: {dest_dir}")
+    for root in [library] + list(protect or []):
+        if is_inside(dest_dir, root):
+            raise PipelineError(f"refusing to write inside a source folder: {dest_dir}")
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / Path(src).name
+    dest = dest_dir / (name or Path(src).name)
     if dest.exists() and dest.stat().st_size == Path(src).stat().st_size:
         return dest
     shutil.copy2(src, dest)
@@ -276,6 +292,39 @@ def group_dir(f: Frame) -> str:
 def nina_tag(exp: float) -> str:
     """The exposure part of a NINA file name: _120.00s_ (group counts)."""
     return f"_{exp:.2f}s_"
+
+
+def exposure_tag(exp: float, names: list[str]) -> str:
+    """The exposure part the PJSR finds a group by: the NINA form when the
+    staged names carry it, else the Seestar form (_10.0s_, PS-265)."""
+    for tag in (nina_tag(exp), f"_{exp:.1f}s_", f"_{exp:g}s_"):
+        if any(tag in n for n in names):
+            return tag
+    return nina_tag(exp)
+
+
+def staged_name(name: str) -> str:
+    """PS-265: the name a plain-folder light gets in the run folder. The
+    Seestar puts spaces in its names (Light_NGC 281_10.0s_...); the PJSR log
+    parsing ("DROPPED at <stage>: <file>") stops at a space, so they become
+    underscores."""
+    return name.replace(" ", "_")
+
+
+def folder_site(lights: list[Frame]) -> dict:
+    """Median SITELAT / SITELONG of the lights ({} when none): the pointing
+    check's altitude for frames not shot at AARO (PS-265)."""
+    import statistics
+    la = [f.site_lat for f in lights if f.site_lat is not None]
+    lo = [f.site_lon for f in lights if f.site_lon is not None]
+    if not la or not lo:
+        return {}
+    return {"lat": round(statistics.median(la), 3), "lon": round(statistics.median(lo), 3)}
+
+
+def drizzle_master_path(out_dir: Path, stack: str, scale: int) -> Path:
+    """Where integrate_stack.js saves a stack's drizzle master (PS-265)."""
+    return Path(out_dir) / "master" / "drizzle" / f"master_{stack}_drizzle{int(scale)}x.xisf"
 
 
 def reference_per_filter(rows: list[dict], kept: set[str]) -> dict[str, str]:
@@ -401,7 +450,41 @@ def build_integrate_config(o: Options, run_dir: Path, stacks: list[dict], plan: 
             "target": o.target, "rig": o.rig, "cfa": cfa, "pedestal": PEDESTAL_DN,
             "bias": {"dir": "BIAS"} if plan.bias else None,
             "darks": darks, "flats": flats, "stacks": stacks, "reference": reference,
-            "min_group_frames": int(o.min_group_frames)}
+            "min_group_frames": int(o.min_group_frames),
+            # PS-265: drizzle scale (0 = off), rejection override, pruning
+            "drizzle": int(o.drizzle or 0), "rejection": (o.rejection or "").lower(),
+            "prune": bool(o.prune)}
+
+
+def folder_processing(o: Options, cfa: str, integrated: list[Frame], result: dict) -> str:
+    """The packet's processing sentence for a plain-folder run (PS-265)."""
+    darks = sorted(e for e in o.dark_files)
+    dz = (result.get("drizzle") or {}).get("made") or []
+    rej = ("Generalized ESD rejection" if o.rejection == "esd" and len(integrated) >= 15
+           else ("Winsorized sigma clipping" if len(integrated) >= 15 else "sigma clipping"))
+    return ("Lights only (no bias or flats"
+            + (", master dark for " + ", ".join(f"{e:g} s" for e in darks) + " subs" if darks else ", no darks")
+            + "), CosmeticCorrection (auto hot and cold), "
+            + (f"VNG debayer ({cfa}), " if cfa else "")
+            + "StarAlignment with distortion correction, LocalNormalization, ImageIntegration with "
+            "PSF Signal Weight and " + rej
+            + (f", DrizzleIntegration {int(o.drizzle)}x" if dz else "")
+            + ", GradientCorrection, plate solve, color calibration, linked stretch.")
+
+
+def folder_issues(o: Options, integrated: list[Frame], result: dict) -> list[str]:
+    """Known issues of a plain-folder run (PS-265): uncooled, no calibration
+    library, drizzle that did not happen."""
+    out = []
+    temps = [f.ccd_temp for f in integrated if f.ccd_temp is not None]
+    if temps:
+        out.append(f"Uncooled sensor: {min(temps):.1f} to {max(temps):.1f} C over the subs; "
+                   "CosmeticCorrection removes hot and cold pixels instead of matched darks.")
+    if not o.dark_files:
+        out.append("No darks or bias: amp glow and fixed pattern are not subtracted.")
+    if o.drizzle and result.get("integration") and not (result.get("drizzle") or {}).get("made"):
+        out.append(f"Drizzle {int(o.drizzle)}x was asked for but not made: the plain master was finished.")
+    return out
 
 
 def catalog_coords(target: str) -> tuple[float | None, float | None]:
@@ -450,9 +533,12 @@ def run(o: Options, echo=print) -> dict:
     with pilock.job(f"integrate {o.target} [{o.rig}]", enabled=o.run_pixinsight and not o.dry_run,
                     wait_min=o.lock_wait_min, echo=echo):
         res = _run_ws(o, echo)
-    # progression sheet (progression.py): guarded, never fails the run
-    from photonscript.integration import progression
-    progression.after_run(res, o.staging_root, echo)
+    # progression sheet (progression.py): guarded, never fails the run. Not
+    # for plain-folder runs (PS-265: another telescope, not the target's
+    # AARO campaign)
+    if not o.folder_mode:
+        from photonscript.integration import progression
+        progression.after_run(res, o.staging_root, echo)
     return res
 
 
@@ -472,6 +558,10 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
     run_dir = ws.run_dir if ws else (Path(o.out) if o.out else default_run_dir(o))
     if is_inside(run_dir, o.library):
         raise PipelineError(f"the run folder must be outside the Library mirror: {run_dir}")
+    for d in o.source_dirs or []:
+        if is_inside(run_dir, d):
+            raise PipelineError(f"the run folder must be outside the input folder {d}: {run_dir}")
+    stg = staged_name if o.folder_mode else (lambda n: n)
     if not o.dry_run:
         if run_dir.exists() and any(run_dir.iterdir()):
             raise PipelineError(f"{run_dir} exists and is not empty: every run gets a NEW folder "
@@ -481,9 +571,17 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
     timer = Timer(None if o.dry_run else out_dir / "timing.csv", echo)
     result: dict = {"run_dir": str(run_dir), "dry_run": o.dry_run}
 
-    with timer.stage("select lights from the Library"):
-        sel: Selection = select_lights(o.library, o.target, o.rig, since=o.since, until=o.until,
-                                       filters=o.filters, tz=o.tz)
+    with timer.stage("select lights from " + ("the input folders" if o.folder_mode else "the Library")):
+        if o.folder_mode:
+            sel = select_folders(o.source_dirs, o.target, pattern=o.source_pattern, since=o.since,
+                                 until=o.until, filters=o.filters, tz=o.tz)
+            if o.focratio:
+                for f in sel.lights:
+                    if not f.focratio:
+                        f.focratio = float(o.focratio)
+        else:
+            sel = select_lights(o.library, o.target, o.rig, since=o.since, until=o.until,
+                                filters=o.filters, tz=o.tz)
         groups = sel.groups()
         echo(f"  folders: {', '.join(sel.folders) or 'none'}; {len(sel.lights)} lights "
              + "(" + ", ".join(f"{k[0]} {k[1]} x{len(v)}" for k, v in groups.items()) + ")")
@@ -493,7 +591,9 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         for p, why in sel.skipped[:10]:
             echo(f"  skipped {Path(p).name}: {why}")
     if not sel.lights:
-        raise PipelineError(f"no approved {o.rig} lights for {o.target!r} in {o.library}")
+        raise PipelineError(f"no lights matching {o.source_pattern} in "
+                            + ", ".join(str(d) for d in o.source_dirs) if o.folder_mode
+                            else f"no approved {o.rig} lights for {o.target!r} in {o.library}")
     # FOCPOS 0 (the 2026-10-08 RC16 EAF off USB): focus unknown, never
     # stacked in any --qa mode unless --keep-focuser-zero
     zero = [f for f in sel.lights if star_qa.is_focuser_zero(f)]
@@ -512,10 +612,12 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
     # pointing sanity (pointing_check.py): header RA / DEC vs the catalog,
     # altitude, a mount that was not tracking
     t_ra, t_dec = catalog_coords(o.target)
+    # plain-folder lights carry their own site (the Seestar: SITELAT / SITELONG)
+    psite = (folder_site(sel.lights) or o.site or {}) if o.folder_mode else (o.site or {})
     try:
         prep = pointing_check.check(sel.lights, t_ra, t_dec, mode=o.pointing_check,
                                     max_deg=o.pointing_max_deg, min_alt_deg=o.pointing_min_alt_deg,
-                                    lat=(o.site or {}).get("lat"), lon=(o.site or {}).get("lon"))
+                                    lat=psite.get("lat"), lon=psite.get("lon"))
     except ValueError as e:
         raise PipelineError(str(e)) from None
     result["pointing"] = prep.summary()
@@ -534,9 +636,16 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
 
     rows, ref_i = [], None
     qa_by_file: dict[str, dict] = {}
+    thr = o.thresholds
     if o.qa != "off":
         with timer.stage(f"star QA ({len(sel.lights)} subs)"):
-            rows, ref_i = star_qa.run_qa(sel.lights, workers=o.workers, thr=o.thresholds, echo=echo)
+            if o.folder_mode and thr.require_registration:
+                # PS-265: the Seestar field rotates; StarAlignment registers
+                # what the star QA shift vote cannot
+                from dataclasses import replace as _replace
+                thr = _replace(thr, require_registration=False)
+                echo("  plain folder input: subs star QA cannot register are kept (StarAlignment decides)")
+            rows, ref_i = star_qa.run_qa(sel.lights, workers=o.workers, thr=thr, echo=echo)
             if zero_out:
                 rows += star_qa.focuser_zero_rows(zero)   # after ref_i: indexes stay
             qa_by_file = {r["file"]: r for r in rows}
@@ -559,41 +668,65 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         lights = limit_per_group(lights, o.limit)
         echo(f"  --limit {o.limit}: {len(lights)} subs kept for a small run")
 
-    with timer.stage("match calibration"):
-        instrument = Counter(f.instrument for f in lights).most_common(1)[0][0]
-        cals, cal_skipped = calib.scan(o.library, instrument=instrument)
-        plan = calib.plan(lights, cals, default_readout=o.default_readout, use_flats=o.flats,
-                          min_darks=o.min_darks, max_frames=o.max_cal,
-                          flat_temp_tol=o.flat_temp_tol)
-        lights, off = calib.lights_in_epoch(lights, plan.epoch, o.default_readout)
-        for f, why in off:
-            plan.notes.append(f"light {f.name} left out: {why} (not the stack's epoch)")
-        # PS-178: a light length with no dark is not stacked unless asked
-        refused: list[dict] = []
-        for e in plan.uncalibrated():
-            fs = [f for f in lights if round(f.exp, 2) == e]
-            if not fs:
-                continue
-            filts = ", ".join(sorted({f.filter for f in fs}))
-            if o.allow_uncalibrated:
-                plan.notes.append(f"WARNING: {len(fs)} x {e:g} s lights ({filts}) stacked WITHOUT a dark "
-                                  "(--allow-uncalibrated)")
-                continue
-            lights = [f for f in lights if round(f.exp, 2) != e]
-            refused.append({"exp": e, "n": len(fs), "filters": filts,
-                            "alternatives": plan.darks[e].alternatives})
-            plan.notes.append(f"REFUSED: {len(fs)} x {e:g} s lights ({filts}) have no dark "
-                              f"({plan.darks[e].note}); see the nearest alternatives above, or "
-                              "--allow-uncalibrated to stack them without one")
-        result["refused_uncalibrated"] = refused
-        # PS-177: one stack per mono exposure group; small groups left out
-        specs, left_out, stack_notes = plan_stacks(lights, o.min_group_frames)
-        if left_out:
-            gone = {f.name for f, _ in left_out}
-            lights = [f for f in lights if f.name not in gone]
-        plan.notes += stack_notes
-        for n in plan.notes:
-            echo("  " + n)
+    refused: list[dict] = []
+    if o.folder_mode and not lights:
+        raise PipelineError("no lights left after star QA" + (" (--qa apply)" if o.qa == "apply" else ""))
+    if o.folder_mode:
+        # PS-265: no calibration library for a plain folder: lights only, plus
+        # any ready master dark per exposure (--master-dark); no epoch split
+        # (an uncooled sensor drifts over the nights) and nothing refused
+        with timer.stage("calibration (plain folder: lights only)"):
+            plan = calib.CalibrationPlan(epoch=calib.Epoch.of(lights[0]))
+            cal_skipped = []
+            exps = sorted({round(f.exp, 2) for f in lights})
+            for e in exps:
+                dk = o.dark_files.get(e) or o.dark_files.get(float(e))
+                plan.notes.append(f"{e:g} s lights: " + (f"master dark {Path(dk).name} (as is, no bias)"
+                                                         if dk else "no dark (CosmeticCorrection only)"))
+            plan.notes.append("bias: none, flats: none (plain folder input, lights only)")
+            temps = [f.ccd_temp for f in lights if f.ccd_temp is not None]
+            if temps:
+                plan.notes.append(f"sensor {min(temps):.1f} to {max(temps):.1f} C (uncooled, not matched)")
+            result["refused_uncalibrated"] = refused
+            specs, left_out, stack_notes = plan_stacks(lights, o.min_group_frames)
+            plan.notes += stack_notes
+            for n in plan.notes:
+                echo("  " + n)
+    else:
+        with timer.stage("match calibration"):
+            instrument = Counter(f.instrument for f in lights).most_common(1)[0][0]
+            cals, cal_skipped = calib.scan(o.library, instrument=instrument)
+            plan = calib.plan(lights, cals, default_readout=o.default_readout, use_flats=o.flats,
+                              min_darks=o.min_darks, max_frames=o.max_cal,
+                              flat_temp_tol=o.flat_temp_tol)
+            lights, off = calib.lights_in_epoch(lights, plan.epoch, o.default_readout)
+            for f, why in off:
+                plan.notes.append(f"light {f.name} left out: {why} (not the stack's epoch)")
+            # PS-178: a light length with no dark is not stacked unless asked
+            for e in plan.uncalibrated():
+                fs = [f for f in lights if round(f.exp, 2) == e]
+                if not fs:
+                    continue
+                filts = ", ".join(sorted({f.filter for f in fs}))
+                if o.allow_uncalibrated:
+                    plan.notes.append(f"WARNING: {len(fs)} x {e:g} s lights ({filts}) stacked WITHOUT a dark "
+                                      "(--allow-uncalibrated)")
+                    continue
+                lights = [f for f in lights if round(f.exp, 2) != e]
+                refused.append({"exp": e, "n": len(fs), "filters": filts,
+                                "alternatives": plan.darks[e].alternatives})
+                plan.notes.append(f"REFUSED: {len(fs)} x {e:g} s lights ({filts}) have no dark "
+                                  f"({plan.darks[e].note}); see the nearest alternatives above, or "
+                                  "--allow-uncalibrated to stack them without one")
+            result["refused_uncalibrated"] = refused
+            # PS-177: one stack per mono exposure group; small groups left out
+            specs, left_out, stack_notes = plan_stacks(lights, o.min_group_frames)
+            if left_out:
+                gone = {f.name for f, _ in left_out}
+                lights = [f for f in lights if f.name not in gone]
+            plan.notes += stack_notes
+            for n in plan.notes:
+                echo("  " + n)
     if not lights:
         raise PipelineError("no lights left after QA, the epoch check, the dark check "
                             "and the exposure groups" + (
@@ -603,7 +736,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
     kept_names = {f.name for f in lights}
     reference = ""
     if rows and ref_i is not None and rows[ref_i]["file"] in kept_names:
-        reference = Path(rows[ref_i]["file"]).stem
+        reference = stg(Path(rows[ref_i]["file"]).stem)
     cfa = (lights[0].bayer or "RGGB").upper() if lights[0].is_osc else ""
 
     # stacks (PS-177): OSC = one stack of every exposure; mono = one per
@@ -621,11 +754,16 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
             sample = next((f for f in fs if round(f.exp, 2) == e), None)
             if sample is None:
                 continue
-            grp.append({"name": sample.exp_key, "exp": e, "dir": group_dir(sample), "tag": nina_tag(e),
-                        "dark": (dc.dark_exp if dc and dc.frames else None),
-                        "optimize": bool(dc and dc.scaled)})
+            gi = {"name": sample.exp_key, "exp": e, "dir": group_dir(sample),
+                  "tag": exposure_tag(e, [stg(f.name) for f in fs if round(f.exp, 2) == e]),
+                  "dark": (dc.dark_exp if dc and dc.frames else None),
+                  "optimize": bool(dc and dc.scaled)}
+            dk = o.dark_files.get(e) or o.dark_files.get(float(e)) if o.folder_mode else None
+            if dk:
+                gi["dark_file"] = pjsr.fwd(Path(dk))   # PS-265: a ready master dark, used as is
+            grp.append(gi)
         stacks.append({"name": sp["name"], "filter": safe_name(sp["filter"]), "groups": grp,
-                       "reference": reference_for(rows, {f.name for f in fs}) if rows else "",
+                       "reference": stg(reference_for(rows, {f.name for f in fs})) if rows else "",
                        # PS-177: a stack of several lengths never integrates
                        # with equal weights (PJSR falls back to exposure time)
                        "mixed_exposures": len(grp) > 1})
@@ -633,7 +771,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         # the QA reference was left out (--limit, epoch, refused): the
         # stack star_qa.run_rank prefers (L, then the reference with the
         # most stars, then the longest subs)
-        stars_of = {Path(r["file"]).stem: r.get("stars") or 0 for r in rows}
+        stars_of = {stg(Path(r["file"]).stem): r.get("stars") or 0 for r in rows}
         best = max(stacks, key=lambda s: star_qa.run_rank(
             s["filter"], len(stack_frames.get(s["name"], ())), stars_of.get(s["reference"], 0),
             max(g["exp"] for g in s["groups"])))
@@ -660,7 +798,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
             for f in sel.lights:
                 qa = qa_by_file.get(f.name)
                 if f.name in kept_names:
-                    d = copy_into(f.path, run_dir / group_dir(f), o.library)
+                    d = copy_into(f.path, run_dir / group_dir(f), o.library, name=stg(f.name),
+                                  protect=o.source_dirs)
                     staged_files[f.name] = str(d)
                     n += 1
                 entries.append(manifest.frame_entry(f, "light", f"{f.filter} {f.exp_key}",
@@ -704,7 +843,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                   "reasons": reasons.most_common(), "reference": reference,
                   "groups": star_qa.group_summary(rows) if rows else [],
                   "pointing": result.get("pointing"),
-                  "thresholds": star_qa.thresholds_dict(o.thresholds)}
+                  "thresholds": star_qa.thresholds_dict(thr)}
     palette, palette_why = pjsr.palette_for_target(o.palette, o.target, o.palette_kinds)
     if palette_why and cfa:
         echo("  " + palette_why)
@@ -811,7 +950,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
     skipped: list[dict] = []
     if o.run_pixinsight:
         with timer.stage("PixInsight integration (launch to exit)"):
-            r = runner.run_script(integ_js, out_dir / "pipeline.log", exe=o.pixinsight, echo=echo)
+            r = runner.run_script(integ_js, out_dir / "pipeline.log", exe=o.pixinsight, echo=echo,
+                                  timeout_s=float(o.pi_timeout_h or 6.0) * 3600)
             echo(f"  integration: {'EXIT OK' if r['ok'] else 'FAILED'} in {r['minutes']} min ({r['last_line']})")
             result["integration"] = r
             pi_ok = r["ok"]
@@ -834,6 +974,27 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                 fcfg["masters"] = keep
                 finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
                 echo(f"  {finish_js.name} rewritten for {len(keep)} master(s)")
+        if pi_ok and o.drizzle:
+            # PS-265: the finish takes each stack's drizzle master when
+            # PixInsight made one (pixel scale / drizzle for the plate solve)
+            dz, keep_m = [], []
+            for m in fcfg["masters"]:
+                st = Path(m["path"]).stem[len("master_"):]
+                dp = drizzle_master_path(out_dir, st, o.drizzle)
+                if dp.exists():
+                    dz.append(st)
+                    keep_m.append({"name": m["name"], "path": pjsr.fwd(dp)})
+                else:
+                    keep_m.append(m)
+            result["drizzle"] = {"scale": int(o.drizzle), "made": dz,
+                                 "missing": [s["name"] for s in stacks if s["name"] not in dz]}
+            if dz:
+                fcfg["masters"] = keep_m
+                fcfg["pixel_um"] = float(g0.pixel_um or 3.76) / float(o.drizzle)
+                finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
+                echo(f"  drizzle {o.drizzle}x masters: {', '.join(dz)}; {finish_js.name} rewritten for them")
+            else:
+                echo(f"  WARNING: no drizzle master made (see out/pipeline.log); the finish uses the plain masters")
         if pi_ok and cfa and o.osc_hdr_core:
             # OSC core combine: only when the full master's core is clipped
             # (core_master's plateau check); any failure keeps master_OSC
@@ -873,7 +1034,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                 warn_px=o.core_warn_px, echo=echo, target=o.target)
         if pi_ok and o.finish:
             with timer.stage("PixInsight finish (launch to exit)"):
-                r2 = runner.run_script(finish_js, out_dir / "finish.log", exe=o.pixinsight, echo=echo)
+                r2 = runner.run_script(finish_js, out_dir / "finish.log", exe=o.pixinsight, echo=echo,
+                                       timeout_s=float(o.pi_timeout_h or 6.0) * 3600)
                 echo(f"  finish: {'EXIT OK' if r2['ok'] else 'FAILED'} in {r2['minutes']} min")
                 result["finish"] = r2
                 jpgs = sorted((out_dir / "final").glob("*_final.jpg"))
@@ -911,7 +1073,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
 
     with timer.stage("AstroBin packet draft"):
         gone_names = set().union(*(stack_frames.get(k["stack"], set()) for k in skipped))
-        integrated = [f for f in lights if not (pi_ok and f.base in dropped) and f.name not in gone_names]
+        integrated = [f for f in lights if not (pi_ok and stg(f.base) in dropped) and f.name not in gone_names]
         darks_for = {d.light_exp: len(d.frames) for d in plan.darks.values()}
         flats_for = {k: len(v.frames) for k, v in plan.flats.items()}
         rows_csv = astrobin.acquisition_rows(integrated, darks_for=darks_for, flats_for=flats_for,
@@ -931,7 +1093,9 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                               f"dark optimization; matched darks would remove this.")
             elif not d.frames and any(round(f.exp, 2) == d.light_exp for f in integrated):
                 issues.append(f"{d.light_exp:g} s subs have no dark ({d.note}).")
-        if not plan.bias:
+        if o.folder_mode:
+            issues += folder_issues(o, integrated, result)
+        elif not plan.bias:
             issues.append("No bias frames matched.")
         if len({f.night for f in integrated}) > 1:
             issues.append("Several nights: framing can differ between nights; the stack keeps the overlap.")
@@ -960,7 +1124,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                           "mount": g0.telescope or "not in the header",
                           "software": g0.software or "?"},
             "location": o.site, "integrated_by_pi": pi_ok, "final": final_img,
-            "processing": ("calibration (bias, darks" + (", flats" if flats_for and any(flats_for.values()) else "")
+            "processing": (folder_processing(o, cfa, integrated, result) if o.folder_mode else
+                           "calibration (bias, darks" + (", flats" if flats_for and any(flats_for.values()) else "")
                            + "), CosmeticCorrection, " + ("VNG debayer, " if cfa else "")
                            + "StarAlignment with distortion correction, LocalNormalization, "
                            "ImageIntegration with PSF Signal Weight and "

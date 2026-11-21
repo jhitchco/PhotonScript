@@ -587,6 +587,61 @@ autointegrate holds the NB blend until the RC16 run's ledger shows
 `blend_nb_min_ha_h` (2 h) of Ha (`blend_nb_gate`); readiness per goal:
 `photonscript blend-readiness` (HANDBOOK, "Heart narrowband blend").
 
+## 0e. Plain folder input: Seestar S50 Pro (PS-265)
+
+Another telescope's subs, not the Library: `--input` (repeatable) reads
+every `Light_*.fit` (`--pattern`) of plain folders, read-only (the `.jpg` /
+`_thn.jpg` beside each sub are ignored), and builds the run in the normal
+scratch / staging layout with `ledger.json`:
+
+```
+photonscript integrate --target "NGC 281" --seestar --qa apply ^
+  --input "I:\Seestar-271120\MyWorks\NGC 281_sub" --input "I:\Seestar-271121\MyWorks\NGC 281_sub" ^
+  --input "I:\Seestar-271120\MyWorks\NGC 281W_sub" --no-finish
+photonscript osc-split --run <run> --hoo LP --rgb IRCUT
+photonscript finish --mono-run <run>_split --rig seestar --target "NGC 281" --pixel-um 1.45
+```
+
+- Header facts (Seestar S50 Pro): CREATOR `ZWO Seestar S50 Pro` (no
+  INSTRUME / SWCREATE: CREATOR is the camera and software), BAYERPAT GRBG
+  (checked 2026-11-21: the two diagonal sites (0,0) / (1,1) have identical
+  medians, so they are the green pair, and site (0,1) correlates with the
+  red channel of the Seestar's own JPG), 2160 x 3840, 2.9 um, 260 mm, gain
+  200, uncooled (CCD-TEMP only), FILTER LP (dual-band) or IRCUT, SITELAT /
+  SITELONG, RA / DEC in degrees, no FOCRATIO.
+- `--seestar`: rig `seestar` (a desktop record only: never posted to the
+  scheduler, never retried by autointegrate, no progression sheet), f/5,
+  drizzle 2x, Generalized ESD, `--prune`, PixInsight timeout 16 h, and every
+  sub length of a filter in ONE stack (10 s and 60 s together, PSF Signal
+  Weight; the Piggy HDR short set and the OSC core combine are off).
+- Calibration: lights only. A group with no bias, dark or flat skips
+  ImageCalibration; CosmeticCorrection auto-detects hot AND cold pixels.
+  `--master-dark EXP=FILE` gives the EXP s lights a ready master dark (the
+  Seestar's `darklibrary\10s\MasterDark_...fit`), used as is (no bias, no
+  scaling). No epoch split: an uncooled sensor drifts over the nights.
+- Star QA: the Seestar field rotates (about 3 deg an hour on 2026-10-07:
+  EQ mode on an imperfectly aligned wedge) and the QA shift vote only
+  handles 0 / 180 deg, so in folder mode a sub it cannot register is kept
+  (`require_registration` off) and StarAlignment decides; trailed (ecc),
+  low stars, bright sky, soft and doubled still reject with `--qa apply`.
+- Staged names: spaces become underscores (`Light_NGC_281_10.0s_...`), so
+  the PJSR log parsing works; groups are found by the `_10.0s_` tag.
+- PJSR (`integrate_stack.js`): `CONFIG.drizzle` makes StarAlignment write
+  `.xdrz` (never for the pass 3 own-reference frames), ImageIntegration
+  update them, then DrizzleIntegration (square kernel, drop shrink 0.9,
+  LocalNormalization maps) writes
+  `out\master\drizzle\master_<S>_drizzle2x.xisf` (+ review jpg). Optional:
+  a failed drizzle leaves the plain master, and the finish uses the plain
+  master. `CONFIG.prune` deletes the cc frames after debayer and the cal /
+  cc / debayer / reg frames once the stack's masters are saved (a 1500 sub
+  stack otherwise needs about 300 GB). The finish takes the drizzle masters
+  (pixel size / 2 for the plate solve).
+- `osc-split` (`deploy/osc_split_channels.js`): a dual-band master gives
+  `master_Ha` (R) + `master_OIII` ((G + B) / 2), a broadband one
+  `master_R / G / B`, in a NEW `<run>_split` folder; `finish --mono-run`
+  then makes `<target>_RGB` and `<target>_HOO` with the RGB stars
+  (finish_mono_color.js).
+
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
 - `photonscript/image_processor/osc_cull.py`: **runs first** (called by
