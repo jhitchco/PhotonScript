@@ -299,6 +299,8 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
         lines.append((1 if guided else 2, guiding))
     if plan.get("moon_fill_note"):
         lines.append((1, str(plan["moon_fill_note"])))
+    if plan.get("gap_fill_note"):
+        lines.append((1, str(plan["gap_fill_note"])))
     if recipe:
         lines.append((1, f"First: {recipe}."))
     if piggy:

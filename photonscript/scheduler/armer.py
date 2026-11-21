@@ -2389,6 +2389,11 @@ class Armer:
         self.plan["moon_fill_note"] = plan_info.get("moon_fill_note")
         if plan_info.get("moon_fill_note"):
             logger.info("Plan: %s", plan_info["moon_fill_note"])
+        # 2026-11-21 gap fill: which goal fills which RC16 gap
+        self.plan["gap_fill"] = list(plan_info.get("gap_fill") or [])
+        self.plan["gap_fill_note"] = plan_info.get("gap_fill_note")
+        if plan_info.get("gap_fill_note"):
+            logger.info("Plan: %s", plan_info["gap_fill_note"])
         # 2026-10-26: "imaging now" and the dashboard read the targets this
         # dispatch loaded, not the arm's list (2026-10-25: "0 target(s)
         # ... on ?" while the RC16 imaged Heart Nebula)
@@ -2431,8 +2436,10 @@ class Armer:
                                        now, guided=self._use_guiding())
         if self._plan_view(targets, now, source="replan"):
             self.plan["rc16_nb_unguided"] = list(info.get("rc16_nb_unguided") or [])
-            for k in ("rc16_nb_note", "moon_fill", "moon_fill_note"):
+            for k in ("rc16_nb_note", "moon_fill", "moon_fill_note",
+                      "gap_fill_note"):
                 self.plan[k] = info.get(k)
+            self.plan["gap_fill"] = list(info.get("gap_fill") or [])
             self._piggy_lengths(targets, projects)
         self.plan["goals_fp"] = fp
 
