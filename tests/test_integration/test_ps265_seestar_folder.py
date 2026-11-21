@@ -191,7 +191,7 @@ def test_template_drizzle_esd_prune_lights_only():
     assert pjsr.check(t.replace("//__CONFIG__", "var CONFIG = {};")) == []
     # lights only: no ImageCalibration when nothing is there to calibrate
     assert "if (!bias && !dark && !flat) {" in t and "return lights.slice(0);" in t
-    assert "if (g.dark_file && File.exists(g.dark_file)) dark = g.dark_file;" in t
+    assert "if (g.dark_file && File.exists(g.dark_file)) dark = darkAsXisf(g.dark_file);" in t
     # drizzle: SA writes drizzle data (not for pass 3), II updates it, DI runs
     assert "SA.generateDrizzleData = true" in t and "noDrizzle: true" in t
     assert "II.generateDrizzleData = true" in t
