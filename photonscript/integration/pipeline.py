@@ -777,7 +777,12 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
             max(g["exp"] for g in s["groups"])))
         reference = best["reference"]
     if reference:
-        stacks.sort(key=lambda s: s["reference"] != reference)
+        # the stack that holds the run's registration reference goes first
+        # (PS-265: an OSC stack of several lengths has the reference of its
+        # first group as its own, the run pick can be another group's)
+        holds = {s["name"] for s in stacks
+                 if any(stg(Path(n).stem) == reference for n in stack_frames.get(s["name"], ()))}
+        stacks.sort(key=lambda s: (s["name"] not in holds, s["reference"] != reference))
 
     entries = []
     staged_files: dict[str, str] = {}

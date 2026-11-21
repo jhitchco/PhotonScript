@@ -301,3 +301,9 @@ def test_split_folder_is_a_seestar_mono_run(tmp_path):
     kinds = {it["kind"]: it for it in items}
     assert set(kinds) == {"rgb", "hoo"} and kinds["hoo"]["stars_from"] == "rgb"
     assert fn.RIG_OPTICS["seestar"] == (260.0, 2.9)
+
+
+def test_prune_keeps_the_shared_registration_reference():
+    t = pjsr.template(pjsr.INTEGRATE_TEMPLATE)
+    body = t[t.index("if (CONFIG.prune) {"):t.index('log("[" + S + "] funnel "')]
+    assert "keepRef" in body and "continue;" in body and "reg.file" in body

@@ -806,13 +806,21 @@ function runStack(stack, masters, reg) {
    if (drzFiles) drizzleStack(S, drzFiles, lnData);
    if (CONFIG.prune) {
       // the master (and the drizzle master) are written: the stack's big
-      // intermediates go (logs, weights, drizzle and LN data stay)
-      var pr = 0;
+      // intermediates go (logs, weights, drizzle and LN data stay). Never
+      // the shared registration reference (reg.file): the next stacks
+      // register onto it (2026-11-21 NGC 281: pruning it cost LP its
+      // drizzle, every frame fell to pass 3).
+      var pr = 0, keepRef = reg.file ? File.extractName(reg.file) + File.extractExtension(reg.file) : "";
       ["reg", "reg_self", "debayer", "cc", "cal"].forEach(function (d) {
          var fs = searchDirectory(SOUT + "/" + d + "/*.xisf", false);
-         for (var i = 0; i < fs.length; ++i) { File.remove(fs[i]); ++pr; }
+         for (var i = 0; i < fs.length; ++i) {
+            if (reg.file && (fs[i] === reg.file || File.extractName(fs[i]) + File.extractExtension(fs[i]) === keepRef))
+               continue;
+            File.remove(fs[i]); ++pr;
+         }
       });
-      log("[" + S + "] pruned " + pr + " intermediate frames (master saved)");
+      log("[" + S + "] pruned " + pr + " intermediate frames (master saved" +
+          (reg.file ? "; kept the registration reference " + File.extractName(reg.file) : "") + ")");
    }
    log("[" + S + "] funnel " + all.length + " staged -> " + work.length + " cal -> " + ccFiles.length + " cc -> " +
        rgbFiles.length + (CONFIG.cfa ? " debayer -> " : " -> ") + nReg + " reg -> " + regFiles.length + " integrated");
