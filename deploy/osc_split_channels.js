@@ -51,7 +51,16 @@ function extract(view, expr, id, path) {
    var w = ImageWindow.windowById(id);
    if (w.isNull) throw new Error("no image " + id);
    try {
+      // keep the source master's keywords (DATE-OBS, site, XPIXSZ, FOCALLEN,
+      // RA / DEC: the plate solve seeds from them; 2026-11-21 NGC 281 split
+      // masters without them failed all 25 solve seeds), new FILTER, no
+      // BAYERPAT (a mono channel)
       var kw = [];
+      try {
+         var src = view.window.keywords;
+         for (var k = 0; k < src.length; ++k)
+            if (src[k].name !== "FILTER" && src[k].name !== "BAYERPAT" && src[k].name !== "HISTORY") kw.push(src[k]);
+      } catch (e1) {}
       kw.push(new FITSKeyword("FILTER", "'" + id.replace(/^PS_/, "") + "'", "PS-265 channel of an OSC master"));
       kw.push(new FITSKeyword("HISTORY", "", "PhotonScript osc-split: " + expr + " of " + File.extractName(CONFIG_SRC)));
       w.keywords = kw;
