@@ -969,6 +969,10 @@ def plan_night_sequence(
                 skipped[proj.target.name] = "broadband deferred by the moon"
                 continue
             available_seconds = min(available_seconds, usable_s * 0.85)
+        # 2026-11-20: only a broadband-only target takes the promoted tag; a
+        # mixed target keeps the night's "NB" (narrowband only), else its
+        # broadband fills the leftover under the moon (M33 Core LRGB at 85%)
+        tag = fit_tag if bb_only else moon_tag
         ha_min_s = 0.0 if nb_off else ha_first_seconds(proj, config)
         if ha_min_s > 0:
             # Ha first (two-rig NB blend): RC16 Ha until the goal holds
@@ -977,13 +981,13 @@ def plan_night_sequence(
             ha_done_s = (ha_plan.long_seconds_done() if ha_plan is not None
                          else 0.0)
             remaining_exposures = _fit_ha_first(
-                remaining_exposures, available_seconds, fit_tag,
+                remaining_exposures, available_seconds, tag,
                 ha_done_s, ha_min_s)
             if ha_done_s < ha_min_s:
                 ha_first_by_name[proj.target.name] = (ha_done_s, ha_min_s)
         else:
             remaining_exposures = _fit_by_moon(
-                remaining_exposures, available_seconds, fit_tag)
+                remaining_exposures, available_seconds, tag)
         if not remaining_exposures:
             # e.g. a broadband-only target on a bright-moon night -> skip tonight
             skipped[proj.target.name] = "broadband deferred by the moon"
