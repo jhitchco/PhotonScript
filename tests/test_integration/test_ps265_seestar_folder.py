@@ -334,3 +334,11 @@ def test_fits_master_dark_is_saved_as_xisf_first():
     assert "dark = darkAsXisf(g.dark_file);" in t
     body = t[t.index("function darkAsXisf("):t.index("function calibrateGroup(")]
     assert '".xisf"' in body and "/master/darks" in body and "forceClose" in body
+
+
+def test_dropped_from_log_keeps_seestar_names_whole():
+    log = ("2026-11-21T20:37:52Z  DROPPED at registration: Light_M_42_60.0s_LP_20261121-040516_cc_d\n"
+           "2026-11-21T17:25:15Z  DROPPED at local normalization (no map): "
+           "Light_NGC_281_10.0s_LP_20261007-231601_cc_d_r.xisf\n")
+    assert pl.dropped_from_log(log) == {"Light_M_42_60.0s_LP_20261121-040516",
+                                         "Light_NGC_281_10.0s_LP_20261007-231601"}

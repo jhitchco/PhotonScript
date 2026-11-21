@@ -453,7 +453,9 @@ def dropped_from_log(text: str) -> set[str]:
     """Base names the PJSR log reports as DROPPED at some stage."""
     out = set()
     for m in re.finditer(r"DROPPED at [^:]+: (\S+)", text):
-        n = Path(m.group(1)).stem
+        # only a real image extension goes (PS-265: Path.stem would cut a
+        # Seestar name at "10.0s": Light_M_42_60.0s_LP_..._cc_d -> Light_M_42_60)
+        n = re.sub(r"\.(xisf|fits?|fts)$", "", m.group(1), flags=re.I)
         for sfx in ("_r", "_d", "_cc", "_c"):      # same order as baseOf() in the PJSR
             if n.endswith(sfx):
                 n = n[: -len(sfx)]
