@@ -12,14 +12,15 @@ from photonscript.shared.models import (
 
 
 # NINA filter wheel position mapping (customize per setup)
+# AARO Pier 3 filter wheel (verified against observatory config)
 FILTER_POSITIONS: dict[FilterType, int] = {
-    FilterType.LUMINANCE: 0,
-    FilterType.RED: 1,
-    FilterType.GREEN: 2,
-    FilterType.BLUE: 3,
+    FilterType.RED: 0,
+    FilterType.GREEN: 1,
+    FilterType.BLUE: 2,
+    FilterType.SII: 3,
     FilterType.HA: 4,
     FilterType.OIII: 5,
-    FilterType.SII: 6,
+    FilterType.LUMINANCE: 6,
 }
 
 
@@ -59,7 +60,9 @@ def generate_nina_xml(sequence: NinaSequenceFile) -> str:
     start = ET.SubElement(root, "StartArea")
     if sequence.targets and sequence.targets[0].cool_camera:
         cool = ET.SubElement(start, "CoolCamera")
-        ET.SubElement(cool, "Temperature").text = str(sequence.targets[0].camera_temp_c)
+        from photonscript.scheduler.nina_sequence_json import rig_cool_setpoint
+        ET.SubElement(cool, "Temperature").text = str(   # PS-154: config
+            rig_cool_setpoint(None, "rc16", sequence.targets[0]))
         ET.SubElement(cool, "Duration").text = "600"  # 10 min cooldown
 
     # Target area — main imaging loop

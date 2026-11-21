@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Disk</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
+        .muted { opacity:.62; font-size:.8rem; }
+        .drivebar { display:flex; height:22px; border-radius:6px; overflow:hidden;
+                    background:rgba(255,255,255,.08); margin:.5rem 0 .4rem; }
+        .drivebar > i { display:block; height:100%; }
+        .legend { display:flex; flex-wrap:wrap; gap:.4rem 1rem; font-size:.78rem; }
+        .legend span::before { content:''; display:inline-block; width:.7rem; height:.7rem;
+                               border-radius:2px; margin-right:.35rem; vertical-align:-1px;
+                               background:var(--c); }
+        .kpis { display:flex; flex-wrap:wrap; gap:1.4rem; margin:.4rem 0; }
+        .kpis div b { display:block; font-size:1.35rem; }
+        table.dt { width:100%; border-collapse:collapse; font-size:.82rem; }
+        table.dt th, table.dt td { padding:.3rem .5rem; text-align:right;
+                                   border-bottom:1px solid var(--border); white-space:nowrap; }
+        table.dt th:first-child, table.dt td:first-child,
+        table.dt th.l, table.dt td.l { text-align:left; }
+        table.dt th[data-k] { cursor:pointer; user-select:none; }
+        table.dt th[data-k]:hover { color:var(--accent-blue); }
+        .tscroll { overflow-x:auto; max-width:100%; }
+        .panel { min-width:0; }
+        .ok { color:#4ade80; } .pend { color:#eab308; } .rej { color:#f87171; }
+        .warn { border-left:4px solid var(--accent-amber); padding:.6rem .8rem;
+                background:rgba(245,158,11,.08); border-radius:6px; margin:.5rem 0 .8rem;
+                font-size:.85rem; }
+        pre.cmd { background:rgba(0,0,0,.35); padding:.6rem .8rem; border-radius:6px;
+                  font-size:.75rem; overflow-x:auto; white-space:pre; }
+        .cand { margin:.9rem 0 1.2rem; }
+        .cand h3 { margin:.2rem 0; font-size:1rem; }
+        .minibar { display:inline-block; width:90px; height:7px; border-radius:3px;
+                   background:rgba(255,255,255,.08); vertical-align:middle; overflow:hidden; }
+        .minibar > i { display:block; height:100%; background:#38bdf8; }
+        button.btn { padding:.35rem .8rem; border-radius:6px; border:1px solid var(--border);
+                     background:var(--bg-hover); color:inherit; cursor:pointer; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Disk: where the image drive goes and what could be freed" %}
+    {% set active_page = "disk" %}
+    {% include "_header.html" %}
+    <main>
+        <section class="panel" id="driveSec">
+            <h2>Image drive</h2>
+            <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
+                <div class="muted" id="scanInfo">loading&hellip;</div>
+                <button class="btn" id="rescanBtn" type="button">Rescan</button>
+            </div>
+            <div class="drivebar" id="driveBar"></div>
+            <div class="legend" id="driveLegend"></div>
+            <div class="kpis" id="driveKpis"></div>
+        </section>
+        <section class="panel" id="areaSec">
+            <h2>Areas</h2>
+            <div class="muted">Hardlink aware: a file counts once, in the first area that holds it
+                (captures before the Library). "Shared" is the size of links whose bytes are
+                counted in another area.</div>
+            <div class="tscroll"><table class="dt" id="areaTable"></table></div>
+        </section>
+        <section class="panel" id="rejSec">
+            <h2>Rejected subs</h2>
+            <div class="kpis" id="rejKpis"></div>
+        </section>
+        <section class="panel" id="nightSec">
+            <h2>Nights</h2>
+            <div class="muted" id="nightNote">Click a column to sort.</div>
+            <div class="tscroll"><table class="dt" id="nightTable"></table></div>
+        </section>
+        <section class="panel" id="cleanSec">
+            <h2>Cleanup candidates</h2>
+            <div class="warn" id="cleanWarn"></div>
+            <div class="muted">PhotonScript never deletes anything here. Each list is served by
+                /api/disk/paths; run the commands yourself on the scope PC, the dry run first.</div>
+            <div id="cleanList"></div>
+        </section>
+    </main>
+    {% include "_footer.html" %}
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const GB = b => (b == null ? '-' : !b ? '0' : b < 1e9 ? (b / 1e6).toFixed(b < 1e7 ? 1 : 0) + ' MB'
+    : (b / 1e9).toFixed(b >= 1e11 ? 0 : 1) + ' GB');
+const COLORS = {captures_rc16: '#38bdf8', captures_piggyback: '#a855f7', library: '#22c55e',
+    library_archive: '#14b8a6', share_other: '#f59e0b', thesky_autosave: '#ef4444',
+    photonscript: '#eab308', data: '#ec4899', other: '#64748b'};
+let DATA = null, SORT = {k: 'date', dir: -1}, POLL = null;
+
+function drive(d) {
+    const dr = d.drive || {};
+    const tot = dr.total || 1;
+    const areas = (d.areas || []).filter(a => !a.other_drive && a.bytes > 0);
+    document.getElementById('driveBar').innerHTML = areas.map(a =>
+        '<i title="' + esc(a.label) + ': ' + GB(a.bytes) + '" style="width:' +
+        (100 * a.bytes / tot).toFixed(2) + '%;background:' + (COLORS[a.key] || '#888') + '"></i>'
+    ).join('');
+    document.getElementById('driveLegend').innerHTML = areas.map(a =>
+        '<span style="--c:' + (COLORS[a.key] || '#888') + '">' + esc(a.label) + ' ' + GB(a.bytes) +
+        '</span>').join('') + '<span style="--c:rgba(255,255,255,.08)">free ' + GB(dr.free) + '</span>';
+    const rc = (d.reclaimable || {});
+    document.getElementById('driveKpis').innerHTML =
+        '<div><b>' + GB(dr.total) + '</b><span class="muted">' + esc(dr.path) + ' total</span></div>' +
+        '<div><b>' + GB(dr.used) + '</b><span class="muted">used</span></div>' +
+        '<div><b>' + GB(dr.free) + '</b><span class="muted">free</span></div>' +
+        '<div><b class="rej">' + GB((d.rejected || {}).bytes) + '</b><span class="muted">rejected subs</span></div>' +
+        '<div><b class="ok">' + GB(rc.total_bytes) + '</b><span class="muted">reclaimable (estimate)</span></div>';
+}
+
+function areaTable(d) {
+    const rows = d.areas || [];
+    document.getElementById('areaTable').innerHTML =
+        '<tr><th>Area</th><th class="l">Path</th><th>Unique</th><th>Shared</th>' +
+        '<th>Cloud only</th><th>Files</th><th class="l">Largest folders</th></tr>' +
+        rows.map(a => '<tr><td>' + esc(a.label) + (a.other_drive ? ' <span class="muted">(other drive)</span>' : '') +
+            '</td><td class="l muted">' + esc(a.path) + (a.exists ? '' : ' (missing)') +
+            '</td><td><b>' + GB(a.bytes) + '</b></td><td>' + (a.shared_bytes ? GB(a.shared_bytes) : '') +
+            '</td><td>' + (a.cloud_only_bytes ? GB(a.cloud_only_bytes) : '') +
+            '</td><td>' + (a.files == null ? '' : a.files.toLocaleString()) +
+            '</td><td class="l muted">' + (a.top || []).slice(0, 4).map(t =>
+                esc(t.name) + ' ' + GB(t.bytes)).join(', ') + '</td></tr>').join('');
+}
+
+function rejKpis(d) {
+    const r = d.rejected || {}, rc = (d.reclaimable || {}).rejected || {};
+    document.getElementById('rejKpis').innerHTML =
+        '<div><b class="rej">' + GB(r.bytes) + '</b><span class="muted">' + (r.files || 0) +
+        ' files, ' + (r.links || 0) + ' links</span></div>' +
+        '<div><b>' + GB(r.verdict_bytes) + '</b><span class="muted">verdict REJECTED (sub index)</span></div>' +
+        '<div><b>' + GB(r.folder_bytes) + '</b><span class="muted">in _rejected / BAD folders</span></div>' +
+        '<div><b>' + GB(r.links_elsewhere_bytes) + '</b><span class="muted">linked outside the scanned folders</span></div>' +
+        '<div><b class="ok">' + GB(rc.freeable_bytes) + '</b><span class="muted">freed by removing every listed link</span></div>';
+}
+
+const SYNC = n => n.synced === true ? '<span class="ok">yes</span>'
+    : n.synced === false ? '<span class="pend">' + n.pending + ' pending</span>'
+    : '<span class="muted">?</span>';
+const COLS = [['date', 'Night'], ['rig', 'Rig'], ['bytes', 'Total'], ['kept_bytes', 'Kept'],
+    ['rejected_bytes', 'Rejected'], ['unjudged_bytes', 'Unjudged'], ['calibration_bytes', 'Calib'],
+    ['library_bytes', 'In Library'], ['synced', 'On desktop'], ['integrated_pct', 'Integrated'],
+    ['archived', 'Archived']];
+
+function nightTable(d) {
+    const rows = (d.nights || []).slice();
+    const k = SORT.k;
+    rows.sort((a, b) => {
+        const x = a[k], y = b[k];
+        if (x === y) return 0;
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return (x < y ? -1 : 1) * SORT.dir;
+    });
+    const max = Math.max(1, ...rows.map(r => r.bytes));
+    document.getElementById('nightNote').textContent = rows.length + ' night x rig rows. ' +
+        (d.sync_known ? (d.sync_capped ? 'Syncthing list is partial: "?" where it cannot prove a transfer. '
+        : '') : 'Syncthing state unknown (not configured or not fetched yet). ') + 'Click a column to sort.';
+    document.getElementById('nightTable').innerHTML = '<tr>' + COLS.map(c =>
+        '<th data-k="' + c[0] + '"' + (c[0] === 'date' || c[0] === 'rig' ? ' class="l"' : '') + '>' +
+        c[1] + (SORT.k === c[0] ? (SORT.dir < 0 ? ' &#9660;' : ' &#9650;') : '') + '</th>').join('') +
+        '</tr>' + rows.map(n => '<tr' + (n.candidate ? ' style="background:rgba(34,197,94,.07)"' : '') +
+        '><td class="l">' + (/^\d{4}-/.test(n.date) ? '<a href="/runs/' + esc(n.date) + '">' + esc(n.date) + '</a>'
+        : esc(n.date)) + '</td><td class="l">' + esc(n.rig) + '</td><td><span class="minibar"><i style="width:' +
+        (100 * n.bytes / max).toFixed(1) + '%"></i></span> <b>' + GB(n.bytes) + '</b></td><td class="ok">' +
+        GB(n.kept_bytes) + '</td><td class="rej">' + GB(n.rejected_bytes) + '</td><td>' +
+        GB(n.unjudged_bytes) + '</td><td>' + GB(n.calibration_bytes) + '</td><td>' + GB(n.library_bytes) +
+        '</td><td>' + SYNC(n) + '</td><td>' + (n.integrated_pct == null ? '<span class="muted">?</span>'
+        : n.integrated_pct + '%') + '</td><td>' + (n.archived ? 'yes' : '') + '</td></tr>').join('');
+    document.querySelectorAll('#nightTable th[data-k]').forEach(th => th.onclick = () => {
+        const nk = th.dataset.k;
+        SORT = {k: nk, dir: SORT.k === nk ? -SORT.dir : -1};
+        nightTable(DATA);
+    });
+}
+
+function cleanup(d) {
+    const rc = d.reclaimable || {};
+    document.getElementById('cleanWarn').textContent = d.warning || '';
+    const items = [
+        ['Rejected subs (every link)', rc.rejected, (rc.rejected || {}).freeable_bytes,
+         ((rc.rejected || {}).files || 0) + ' files. Capture originals and their Library / _rejected links.'],
+        ['TheSky autosave older than ' + ((rc.thesky_old || {}).days) + ' days', rc.thesky_old,
+         (rc.thesky_old || {}).bytes, ((rc.thesky_old || {}).files || 0) + ' files in ' +
+         ((rc.thesky_old || {}).path || '')],
+        ['Nights older than ' + ((rc.old_synced_nights || {}).days) + ' days already on the desktop',
+         rc.old_synced_nights, (rc.old_synced_nights || {}).bytes,
+         ((rc.old_synced_nights || {}).nights || []).map(n => n.date + ' ' + n.rig).join(', ') ||
+         'none yet. ' + ((rc.old_synced_nights || {}).note || '')],
+    ];
+    document.getElementById('cleanList').innerHTML = items.map(it =>
+        '<div class="cand"><h3>' + esc(it[0]) + ': <span class="ok">' + GB(it[2]) + '</span></h3>' +
+        '<div class="muted">' + esc(it[3]) + '</div>' +
+        (it[1] && it[2] ? '<pre class="cmd">' + esc(it[1].command) + '</pre>' : '') + '</div>').join('');
+}
+
+function render(d) {
+    DATA = d;
+    const info = document.getElementById('scanInfo');
+    if (!d.ok) {
+        info.textContent = (d.scanning ? 'Scanning (' + (d.progress || 0).toLocaleString() +
+            ' files so far)... ' : '') + (d.note || '') + (d.scan_error ? ' Error: ' + d.scan_error : '');
+    } else {
+        info.textContent = 'Scanned ' + d.scanned_at + ' (' + Math.round(d.age_s / 60) + ' min ago, took ' +
+            d.took_s + ' s)' + (d.scanning ? '; rescanning, ' + (d.progress || 0).toLocaleString() +
+            ' files so far' : '') + (d.scan_error ? '; last scan failed: ' + d.scan_error : '');
+        drive(d); areaTable(d); rejKpis(d); nightTable(d); cleanup(d);
+    }
+    clearTimeout(POLL);
+    if (d.scanning) POLL = setTimeout(() => load(false), 5000);
+}
+
+function load(refresh) {
+    fetch('/api/disk' + (refresh ? '?refresh=1' : '')).then(r => r.json()).then(render)
+        .catch(e => { document.getElementById('scanInfo').textContent = 'Failed: ' + e; });
+}
+document.getElementById('rescanBtn').onclick = () => load(true);
+load(false);
+</script>
+</body>
+</html>

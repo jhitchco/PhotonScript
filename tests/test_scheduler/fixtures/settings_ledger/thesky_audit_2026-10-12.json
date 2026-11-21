@@ -1,0 +1,467 @@
+{
+ "t_utc": "2026-10-13T03:44:47Z",
+ "night": "2026-10-12",
+ "reason": "arm",
+ "title": "TheSky / TPoint: RC16 on the Paramount MX",
+ "armer_state": "ARMED",
+ "rows": [
+  {
+   "id": "time_zone_dst",
+   "group": "Site and time",
+   "label": "Time zone and daylight saving",
+   "severity": "fail",
+   "current": "tz +0, DST not observed (index 0)",
+   "note": "TheSky's local time is +0 h from UTC, the PC's is -6 h: TheSky's local time is off, but its UT is right (Julian date +0.0 s from the PC's UTC, LST puts the site at 109.02 W), so pointing is not affected: set the zone so TheSky's local times and DST dates are right",
+   "status": "warn",
+   "desired": "-7 h with U.S. daylight saving (the PC's zone)"
+  },
+  {
+   "id": "allsky_automated",
+   "group": "Automated Image Link settings",
+   "label": "Use All Sky Image Link (automated runs)",
+   "severity": "warn",
+   "current": "on",
+   "note": "on: enter whether the All Sky database is installed",
+   "status": "unknown",
+   "desired": "on with the All Sky database, or off with a catalog-based solve"
+  },
+  {
+   "id": "allsky_scripted",
+   "group": "Automated Image Link settings",
+   "label": "All Sky Image Link (scripted)",
+   "severity": "warn",
+   "current": "-",
+   "note": "no source had a value",
+   "status": "unknown",
+   "desired": "reported only"
+  },
+  {
+   "id": "imagelink_selftest",
+   "group": "Automated Image Link settings",
+   "label": "TheSky Image Link on a known-good frame",
+   "severity": "fail",
+   "current": "not run",
+   "note": "run it with the Guiding tab button (armer idle)",
+   "status": "unknown",
+   "desired": "succeeds, scale within 1% of ASTAP"
+  },
+  {
+   "id": "true_scale",
+   "group": "Image truth (ASTAP)",
+   "label": "Native image scale (\"/px)",
+   "severity": "warn",
+   "current": "-",
+   "note": "no ASTAP Image Link check yet",
+   "status": "unknown",
+   "desired": "0.236 +/- 1% (config pixel_scale_arcsec)"
+  },
+  {
+   "id": "camera_pa_stable",
+   "group": "Image truth (ASTAP)",
+   "label": "Camera angle vs the model date",
+   "severity": "warn",
+   "current": "-",
+   "note": "no ASTAP Image Link check yet",
+   "status": "unknown",
+   "desired": "within 1 deg of the model date (mod 180)"
+  },
+  {
+   "id": "parity",
+   "group": "Image truth (ASTAP)",
+   "label": "Image parity",
+   "severity": "warn",
+   "current": "-",
+   "note": "no ASTAP Image Link check yet",
+   "status": "unknown",
+   "desired": "same as the first stored check"
+  },
+  {
+   "id": "solve_stars",
+   "group": "Image truth (ASTAP)",
+   "label": "Stars used by ASTAP",
+   "severity": "warn",
+   "current": "-",
+   "note": "astap: no ASTAP Image Link check yet (Guiding tab or --imagelink)",
+   "status": "unknown",
+   "desired": "reported only"
+  },
+  {
+   "id": "allsky_db_installed",
+   "group": "Catalogs",
+   "label": "All Sky Image Link database installed",
+   "severity": "warn",
+   "current": "-",
+   "note": "no source had a value",
+   "status": "unknown",
+   "desired": "installed while All Sky Image Link is on"
+  },
+  {
+   "id": "ucac4_installed",
+   "group": "Catalogs",
+   "label": "UCAC4 installed",
+   "severity": "warn",
+   "current": "-",
+   "note": "no source had a value",
+   "status": "unknown",
+   "desired": "reported only"
+  },
+  {
+   "id": "gaia_installed",
+   "group": "Catalogs",
+   "label": "Gaia installed",
+   "severity": "warn",
+   "current": "-",
+   "note": "no source had a value",
+   "status": "unknown",
+   "desired": "reported only"
+  },
+  {
+   "id": "thesky_version",
+   "group": "TheSky link",
+   "label": "TheSky version / build",
+   "severity": "warn",
+   "current": "10.5.0 build 14139",
+   "note": null,
+   "status": "info",
+   "desired": "reported only"
+  },
+  {
+   "id": "mount_tracking",
+   "group": "Mount",
+   "label": "Tracking / parked",
+   "severity": "warn",
+   "current": "tracking",
+   "note": null,
+   "status": "info",
+   "desired": "tracking while imaging, parked by day"
+  },
+  {
+   "id": "camera_selected",
+   "group": "Camera (TheSky camera add-on)",
+   "label": "Camera selected in TheSky",
+   "severity": "warn",
+   "current": "ASCOM Camera",
+   "note": "desired camera not set yet (want = in the desired file)",
+   "status": "info",
+   "desired": "the RC16 camera (AP26MC); see Question 2"
+  },
+  {
+   "id": "camera_status",
+   "group": "Camera (TheSky camera add-on)",
+   "label": "TheSky camera status",
+   "severity": "warn",
+   "current": "Not Connected",
+   "note": null,
+   "status": "info",
+   "desired": "reported only"
+  },
+  {
+   "id": "filter_wheel_selected",
+   "group": "Camera (TheSky camera add-on)",
+   "label": "Filter wheel selected in TheSky",
+   "severity": "warn",
+   "current": "ASCOM Filter Wheel",
+   "note": null,
+   "status": "info",
+   "desired": "reported only"
+  },
+  {
+   "id": "ails_filter",
+   "group": "Automated Image Link settings",
+   "label": "Filter (greyed: no filter wheel)",
+   "severity": "warn",
+   "current": "L",
+   "note": null,
+   "status": "info",
+   "desired": "reported only"
+  },
+  {
+   "id": "ails_position_angle",
+   "group": "Automated Image Link settings",
+   "label": "Position angle hint vs ASTAP",
+   "severity": "warn",
+   "current": "85.18",
+   "note": "no ASTAP check yet",
+   "status": "info",
+   "desired": "ASTAP camera angle (a hint only)"
+  },
+  {
+   "id": "tpoint_model_active",
+   "group": "TPoint and ProTrack",
+   "label": "TPoint model on (Apply pointing corrections)",
+   "severity": "fail",
+   "current": "manual (2026-10-13): on",
+   "note": "from the manual record, not read from TheSky: verify by eye",
+   "status": "info",
+   "desired": "on"
+  },
+  {
+   "id": "protrack_on",
+   "group": "TPoint and ProTrack",
+   "label": "ProTrack on",
+   "severity": "fail",
+   "current": "manual (2026-10-13): on",
+   "note": "from the manual record, not read from TheSky: verify by eye (Bisque TCS > ProTrack)",
+   "status": "info",
+   "desired": "Activate ProTrack and Enable tracking adjustments ticked (read from TheSky)"
+  },
+  {
+   "id": "first_slew_pattern",
+   "group": "Pointing",
+   "label": "First-slew pattern by Dec and HA",
+   "severity": "warn",
+   "current": "Dec 0 to 30: 0.67' (E 0.12, N -0.64); HA -3 to 0 h: 0.67' (E 0.12, N -0.64)",
+   "note": "about constant across Dec and HA: looks like a sync / home offset",
+   "status": "info",
+   "desired": "reported only"
+  },
+  {
+   "id": "mount_vs_solve",
+   "group": "Pointing",
+   "label": "Mount vs plate solve (PS-67)",
+   "severity": "warn",
+   "current": "-",
+   "note": "PS-67 mount vs solve record not on disk",
+   "status": "info",
+   "desired": "reported only"
+  },
+  {
+   "id": "thesky_scripting",
+   "group": "TheSky link",
+   "label": "TheSky TCP scripting reachable",
+   "severity": "warn",
+   "current": "on",
+   "note": null,
+   "status": "pass",
+   "desired": "on"
+  },
+  {
+   "id": "one_thesky",
+   "group": "TheSky link",
+   "label": "One TheSky running",
+   "severity": "fail",
+   "current": "1: TheSky64 10.5.0.14139 (pid 18644)",
+   "note": "TCP 3040: TheSky64 10.5.0.14139 (pid 18644); driver targets TheSky64 (ASCOM profile)",
+   "status": "pass",
+   "desired": "one TheSky (TheSky64), the one the mount driver targets"
+  },
+  {
+   "id": "mount_selected",
+   "group": "Mount",
+   "label": "Mount selected in TheSky",
+   "severity": "fail",
+   "current": "Paramount MX",
+   "note": null,
+   "status": "pass",
+   "desired": "Paramount MX"
+  },
+  {
+   "id": "mount_connected",
+   "group": "Mount",
+   "label": "Mount connected",
+   "severity": "fail",
+   "current": "on",
+   "note": null,
+   "status": "pass",
+   "desired": "connected while a night is armed"
+  },
+  {
+   "id": "site_latitude",
+   "group": "Site and time",
+   "label": "Site latitude",
+   "severity": "fail",
+   "current": "31.9069",
+   "note": null,
+   "status": "pass",
+   "desired": "31.9069 +/- 0.0167"
+  },
+  {
+   "id": "site_longitude",
+   "group": "Site and time",
+   "label": "Site longitude",
+   "severity": "fail",
+   "current": "109.021; LST says 109.02 W",
+   "note": "TheSky's sidereal time puts the site at 109.02 W",
+   "status": "pass",
+   "desired": "109.02 W (|script| 109.021 +/- 0.0167 deg; E / W from TheSky's LST)"
+  },
+  {
+   "id": "site_elevation",
+   "group": "Site and time",
+   "label": "Site elevation (m)",
+   "severity": "warn",
+   "current": "1300",
+   "note": null,
+   "status": "pass",
+   "desired": "1300 +/- 50"
+  },
+  {
+   "id": "use_computer_clock",
+   "group": "Site and time",
+   "label": "Use computer clock",
+   "severity": "fail",
+   "current": "on",
+   "note": null,
+   "status": "pass",
+   "desired": "on"
+  },
+  {
+   "id": "site_clock",
+   "group": "Site and time",
+   "label": "TheSky time vs the scope PC (s)",
+   "severity": "warn",
+   "current": "+0.0 s",
+   "note": "round trip 0.05 s subtracted",
+   "status": "pass",
+   "desired": "within 2 s"
+  },
+  {
+   "id": "autosave_path",
+   "group": "Camera (TheSky camera add-on)",
+   "label": "Camera AutoSave folder",
+   "severity": "warn",
+   "current": "C:\\Users\\jeremy\\Documents\\Software Bisque\\TheSky Professional Edition 64\\Camera AutoSave\\Imager\\October 12 2026",
+   "note": "checked C:\\Users\\jeremy\\Documents\\Software Bisque\\TheSky Professional Edition 64\\Camera AutoSave\\Imager (the date subfolder October 12 2026 is created on the first save)",
+   "status": "pass",
+   "desired": "set, autosave on, and the folder exists (date subfolder made on the first save)"
+  },
+  {
+   "id": "filter_in_beam",
+   "group": "Camera (TheSky camera add-on)",
+   "label": "Filter NINA left in the beam",
+   "severity": "warn",
+   "current": "L",
+   "note": "NINA log 2026-10-12",
+   "status": "pass",
+   "desired": "L or a broadband filter"
+  },
+  {
+   "id": "ails_exposure_s",
+   "group": "Automated Image Link settings",
+   "label": "Exposure (s)",
+   "severity": "warn",
+   "current": "8",
+   "note": null,
+   "status": "pass",
+   "desired": "5 to 30"
+  },
+  {
+   "id": "ails_image_scale",
+   "group": "Automated Image Link settings",
+   "label": "Image scale (\"/px)",
+   "severity": "fail",
+   "current": "0.235",
+   "note": null,
+   "status": "pass",
+   "desired": "0.236 +/- 2% (0.2360 config pixel_scale_arcsec x bin 1, manual record)"
+  },
+  {
+   "id": "ails_fovs",
+   "group": "Automated Image Link settings",
+   "label": "Search area (FOVs)",
+   "severity": "warn",
+   "current": "8",
+   "note": null,
+   "status": "pass",
+   "desired": ">= 4"
+  },
+  {
+   "id": "ails_retries",
+   "group": "Automated Image Link settings",
+   "label": "Retries",
+   "severity": "warn",
+   "current": "2",
+   "note": null,
+   "status": "pass",
+   "desired": ">= 2"
+  },
+  {
+   "id": "run_binning",
+   "group": "Automated Image Link settings",
+   "label": "Binning in the run setup",
+   "severity": "warn",
+   "current": "1",
+   "note": null,
+   "status": "pass",
+   "desired": "1 to 2"
+  },
+  {
+   "id": "tpoint_points",
+   "group": "TPoint and ProTrack",
+   "label": "Model points",
+   "severity": "warn",
+   "current": "356",
+   "note": null,
+   "status": "pass",
+   "desired": ">= 50 (tpoint_min_points)"
+  },
+  {
+   "id": "tpoint_rms_arcsec",
+   "group": "TPoint and ProTrack",
+   "label": "Model RMS (arcsec)",
+   "severity": "warn",
+   "current": "19.9378",
+   "note": null,
+   "status": "pass",
+   "desired": "<= 30 (tpoint_rms_max_arcsec)"
+  },
+  {
+   "id": "tpoint_polar_error_arcmin",
+   "group": "TPoint and ProTrack",
+   "label": "Polar alignment error (arcmin)",
+   "severity": "warn",
+   "current": "2.67",
+   "note": null,
+   "status": "pass",
+   "desired": "<= 3 (tpoint_polar_max_arcmin)"
+  },
+  {
+   "id": "tpoint_model_age_days",
+   "group": "TPoint and ProTrack",
+   "label": "Model age (days)",
+   "severity": "warn",
+   "current": "-1 d (built 2026-10-13)",
+   "note": null,
+   "status": "pass",
+   "desired": "under 90 days (warn at 67.5)"
+  },
+  {
+   "id": "tpoint_rebuild",
+   "group": "TPoint and ProTrack",
+   "label": "Rebuild the model?",
+   "severity": "fail",
+   "current": "no",
+   "note": null,
+   "status": "pass",
+   "desired": "no: model fresh, same equipment, first slews close"
+  },
+  {
+   "id": "first_slew_error",
+   "group": "Pointing",
+   "label": "NINA first-slew error (14-night median)",
+   "severity": "fail",
+   "current": "0.7' E (n=2) since the model (2026-10-12)",
+   "note": "side from the hour angle (no pier side in the log)",
+   "status": "pass",
+   "desired": "median under 2' per side (fail above 5')"
+  },
+  {
+   "id": "first_slew_index_terms",
+   "group": "Pointing",
+   "label": "First slew vs model index terms",
+   "severity": "warn",
+   "current": "0.7' (night 2026-10-12, n=2) vs IH/ID 81.2' (manual (2026-10-13))",
+   "note": null,
+   "status": "pass",
+   "desired": "first slews small, or not matching the model's IH / ID"
+  }
+ ],
+ "counts": {
+  "pass": 23,
+  "warn": 1,
+  "fail": 0,
+  "unknown": 10,
+  "info": 11
+ },
+ "fail_ids": []
+}
