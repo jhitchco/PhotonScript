@@ -322,6 +322,40 @@ def folder_site(lights: list[Frame]) -> dict:
     return {"lat": round(statistics.median(la), 3), "lon": round(statistics.median(lo), 3)}
 
 
+def zone_for_lon(lon: float) -> str:
+    """A US time zone for a site longitude (PS-265: the Seestar's SITELONG),
+    else the fixed offset Etc zone."""
+    for lo, hi, z in ((-82.5, -67.5, "America/New_York"), (-97.5, -82.5, "America/Chicago"),
+                      (-112.5, -97.5, "America/Denver"), (-127.5, -112.5, "America/Los_Angeles")):
+        if lo <= float(lon) < hi:
+            return z
+    off = -int(round(float(lon) / 15.0))
+    return "Etc/GMT" + (f"+{off}" if off > 0 else (f"{off}" if off < 0 else ""))
+
+
+def localize_dates(frames: list[Frame], zone: str) -> int:
+    """Frames without DATE-LOC get it from DATE-OBS (UTC) in `zone`, and
+    their night from it. Returns how many were set."""
+    from datetime import timezone as _tz
+    from zoneinfo import ZoneInfo
+    from photonscript.integration.frames import night_of, parse_time
+    try:
+        z = ZoneInfo(zone)
+    except Exception:  # noqa: BLE001 - no tz database
+        return 0
+    n = 0
+    for f in frames:
+        if f.date_loc:
+            continue
+        u = parse_time(f.date_obs)
+        if u is None:
+            continue
+        f.date_loc = u.replace(tzinfo=_tz.utc).astimezone(z).replace(tzinfo=None).strftime("%Y-%m-%dT%H:%M:%S")
+        f.night = night_of(f.date_loc)
+        n += 1
+    return n
+
+
 def drizzle_master_path(out_dir: Path, stack: str, scale: int) -> Path:
     """Where integrate_stack.js saves a stack's drizzle master (PS-265)."""
     return Path(out_dir) / "master" / "drizzle" / f"master_{stack}_drizzle{int(scale)}x.xisf"
@@ -614,6 +648,14 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
     t_ra, t_dec = catalog_coords(o.target)
     # plain-folder lights carry their own site (the Seestar: SITELAT / SITELONG)
     psite = (folder_site(sel.lights) or o.site or {}) if o.folder_mode else (o.site or {})
+    if o.folder_mode and psite.get("lon") is not None:
+        # PS-265: the Seestar writes DATE-OBS (UTC) only and was not at AARO:
+        # local dates and nights in the zone of its own SITELONG, so the
+        # AstroBin rows carry the evening date (2026-10-07, not 10-08 UTC)
+        zone = zone_for_lon(psite["lon"])
+        n_loc = localize_dates(sel.lights, zone)
+        if n_loc:
+            echo(f"  local dates from DATE-OBS in {zone} (site longitude {psite['lon']:g}): {n_loc} subs")
     try:
         prep = pointing_check.check(sel.lights, t_ra, t_dec, mode=o.pointing_check,
                                     max_deg=o.pointing_max_deg, min_alt_deg=o.pointing_min_alt_deg,

@@ -307,3 +307,13 @@ def test_prune_keeps_the_shared_registration_reference():
     t = pjsr.template(pjsr.INTEGRATE_TEMPLATE)
     body = t[t.index("if (CONFIG.prune) {"):t.index('log("[" + S + "] funnel "')]
     assert "keepRef" in body and "continue;" in body and "reg.file" in body
+
+
+def test_local_dates_from_site_longitude():
+    from photonscript.integration.frames import Frame
+    assert pl.zone_for_lon(-71.468) == "America/New_York" and pl.zone_for_lon(-109.0) == "America/Denver"
+    f = Frame(path=Path("x.fit"), date_obs="2026-10-08T03:01:38.786484")
+    g = Frame(path=Path("y.fit"), date_obs="2026-11-21T00:29:00", date_loc="2026-11-20T19:29:00")
+    assert pl.localize_dates([f, g], "America/New_York") == 1
+    assert f.date_loc == "2026-10-07T23:01:38" and f.night == "2026-10-07"
+    assert g.date_loc == "2026-11-20T19:29:00"
