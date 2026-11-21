@@ -1,0 +1,3021 @@
+[
+ {
+  "id": "b7b12d53-121a-4835-b4ee-2f7468b368ad",
+  "target": {
+   "id": null,
+   "name": "Cat's Eye Nebula",
+   "catalog_id": "NGC 6543",
+   "ra_hours": 17.97594,
+   "dec_degrees": 66.63319,
+   "constellation": "",
+   "object_type": "planetary nebula",
+   "magnitude": 9.0,
+   "angular_size_arcmin": 0.9,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 600.0,
+    "count": 14,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": 60.0,
+    "hdr_short_count": 12,
+    "hdr_short_acquired": 3,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 600.0,
+    "count": 14,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 3,
+    "acquired_s": 1800.0,
+    "hdr_short_seconds": 60.0,
+    "hdr_short_count": 12,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 70,
+  "budget_hours": 5.0,
+  "filter_mix": {
+   "Ha": 50,
+   "OIII": 50,
+   "SII": 0
+  },
+  "hdr": {
+   "Ha": 60,
+   "OIII": 60
+  },
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "Ha": 600.0,
+   "OIII": 600.0
+  },
+  "created_at": "2026-09-26T03:10:26.481410",
+  "updated_at": "2026-09-26T03:10:26.481410",
+  "total_integration_hours": 5.0,
+  "completion_pct": 11,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 50,
+   "OIII": 50,
+   "SII": 0
+  },
+  "paused_tonight": false,
+  "hours_done": 0.6,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 5.1,
+    "done_h": 0.6
+   }
+  }
+ },
+ {
+  "id": "6efe3989-ff47-4093-a2b4-da8627fdf94d",
+  "target": {
+   "id": null,
+   "name": "Andromeda Galaxy",
+   "catalog_id": "M 31",
+   "ra_hours": 0.712,
+   "dec_degrees": 41.27,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": 3.4,
+   "angular_size_arcmin": 178.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 15.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 44,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 37,
+    "acquired_s": 6780.0,
+    "hdr_short_seconds": 30.0,
+    "hdr_short_count": 12,
+    "hdr_short_acquired": 12,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 8,
+    "acquired_s": 960.0,
+    "hdr_short_seconds": 30.0,
+    "hdr_short_count": 12,
+    "hdr_short_acquired": 12,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 11,
+    "acquired_s": 1320.0,
+    "hdr_short_seconds": 30.0,
+    "hdr_short_count": 12,
+    "hdr_short_acquired": 12,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 9,
+    "acquired_s": 1080.0,
+    "hdr_short_seconds": 30.0,
+    "hdr_short_count": 12,
+    "hdr_short_acquired": 12,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OSC",
+    "exposure_seconds": 120.0,
+    "count": 740,
+    "gain": 100,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 740,
+    "acquired_s": 97560.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "piggyback"
+   }
+  ],
+  "priority": 70,
+  "budget_hours": 4.6,
+  "filter_mix": {
+   "L": 50,
+   "R": 17,
+   "G": 17,
+   "B": 17
+  },
+  "hdr": {
+   "L": 30.0,
+   "R": 30.0,
+   "G": 30.0,
+   "B": 30.0
+  },
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "OSC": 120.0
+  },
+  "created_at": "2026-09-26T03:11:55.048627",
+  "updated_at": "2026-09-26T03:11:55.051753",
+  "total_integration_hours": 4.6,
+  "completion_pct": 95,
+  "active": true,
+  "driving_rig": "piggyback",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": 20.0,
+  "feature_signal_e_s": 0.19,
+  "feature_rig": "piggyback",
+  "feature_note": "outer disk 60' from the core (PS-117 grooming profile, 10-03 400 s subs)",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 50,
+   "R": 17,
+   "G": 17,
+   "B": 17
+  },
+  "paused_tonight": false,
+  "hours_done": 30.3,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 4.6,
+    "done_h": 3.2
+   },
+   "piggyback": {
+    "goal_h": 24.7,
+    "done_h": 24.7
+   }
+  }
+ },
+ {
+  "id": "71cb2775-b8bb-44c7-8ed5-03cf851fef99",
+  "target": {
+   "id": null,
+   "name": "Heart Nebula",
+   "catalog_id": "IC 1805",
+   "ra_hours": 2.555,
+   "dec_degrees": 61.47,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 60.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 20.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "OSC",
+    "exposure_seconds": 300.0,
+    "count": 240,
+    "gain": 100,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 223,
+    "acquired_s": 66990.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "piggyback"
+   }
+  ],
+  "priority": 70,
+  "budget_hours": 20.0,
+  "filter_mix": {
+   "L": 40,
+   "R": 20,
+   "G": 20,
+   "B": 20
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0,
+   "R": 120.0,
+   "G": 120.0,
+   "B": 120.0,
+   "Ha": 180.0,
+   "OSC": 300.0
+  },
+  "created_at": "2026-09-26T20:29:27.593144",
+  "updated_at": "2026-09-26T20:29:27.593144",
+  "total_integration_hours": 20.0,
+  "completion_pct": 93,
+  "active": false,
+  "driving_rig": "piggyback",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "L": 40,
+   "R": 20,
+   "G": 20,
+   "B": 20
+  },
+  "paused_tonight": false,
+  "hours_done": 18.6,
+  "hours_by_rig": {
+   "piggyback": {
+    "goal_h": 20.0,
+    "done_h": 18.6
+   }
+  }
+ },
+ {
+  "id": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+  "target": {
+   "id": null,
+   "name": "NGC 604",
+   "catalog_id": "NGC 604",
+   "ra_hours": 1.5758,
+   "dec_degrees": 30.783,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 2.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 79,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 79,
+    "acquired_s": 9540.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 40,
+    "acquired_s": 5520.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 39,
+    "acquired_s": 4680.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 35,
+    "acquired_s": 4200.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OSC",
+    "exposure_seconds": 300.0,
+    "count": 180,
+    "gain": 100,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 180,
+    "acquired_s": 91980.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "piggyback"
+   }
+  ],
+  "priority": 70,
+  "budget_hours": 6.6,
+  "filter_mix": {
+   "L": 40,
+   "R": 20,
+   "G": 20,
+   "B": 20
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0,
+   "R": 120.0,
+   "G": 120.0,
+   "B": 120.0,
+   "OSC": 300.0
+  },
+  "created_at": "2026-10-06T03:52:13.921694",
+  "updated_at": "2026-10-06T03:52:13.921694",
+  "total_integration_hours": 6.6,
+  "completion_pct": 99,
+  "active": true,
+  "driving_rig": "piggyback",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "L": 40,
+   "R": 20,
+   "G": 20,
+   "B": 20
+  },
+  "paused_tonight": false,
+  "hours_done": 32.2,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 6.6,
+    "done_h": 6.4
+   },
+   "piggyback": {
+    "goal_h": 15.0,
+    "done_h": 15.0
+   }
+  }
+ },
+ {
+  "id": "d13d7844-b53d-4a66-91f4-8ca8b7f38440",
+  "target": {
+   "id": null,
+   "name": "M33 Core P1",
+   "catalog_id": "",
+   "ra_hours": 1.577566,
+   "dec_degrees": 30.77601,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic M33 Core panel 1 of 4",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 20,
+    "acquired_s": 2400.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 40,
+    "acquired_s": 7380.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 20,
+    "acquired_s": 2400.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 18,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 180.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 18,
+    "acquired_s": 2160.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 62,
+  "budget_hours": 5.5,
+  "filter_mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "G": 120.0,
+   "L": 180.0,
+   "R": 120.0,
+   "Ha": 300.0,
+   "B": 120.0
+  },
+  "created_at": "2026-11-08T14:09:35.308844",
+  "updated_at": "2026-11-08T14:09:35.308844",
+  "total_integration_hours": 5.5,
+  "completion_pct": 72,
+  "active": true,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "afedb6060051",
+   "name": "M33 Core",
+   "panel": 1,
+   "row": 1,
+   "col": 1,
+   "of": 4,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.5641,
+    "dec_degrees": 30.66,
+    "rows": 2,
+    "cols": 2,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 45.3,
+    "span_h_arcmin": 30.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 4.0,
+    "order": "in_order",
+    "created_utc": "2026-11-08T14:09:35Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "paused_tonight": false,
+  "hours_done": 4.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 5.5,
+    "done_h": 4.0
+   }
+  }
+ },
+ {
+  "id": "a7e7aead-8905-450c-8092-c0a6862f50e1",
+  "target": {
+   "id": null,
+   "name": "M33 Core P2",
+   "catalog_id": "",
+   "ra_hours": 1.550634,
+   "dec_degrees": 30.77601,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic M33 Core panel 2 of 4",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 33,
+    "acquired_s": 6000.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 3,
+    "acquired_s": 360.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 18,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 62,
+  "budget_hours": 5.5,
+  "filter_mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "G": 120.0,
+   "L": 180.0,
+   "R": 120.0,
+   "Ha": 300.0,
+   "B": 120.0
+  },
+  "created_at": "2026-11-08T14:09:35.308844",
+  "updated_at": "2026-11-08T14:09:35.308844",
+  "total_integration_hours": 5.5,
+  "completion_pct": 32,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "afedb6060051",
+   "name": "M33 Core",
+   "panel": 2,
+   "row": 1,
+   "col": 2,
+   "of": 4,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.5641,
+    "dec_degrees": 30.66,
+    "rows": 2,
+    "cols": 2,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 45.3,
+    "span_h_arcmin": 30.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 4.0,
+    "order": "in_order",
+    "created_utc": "2026-11-08T14:09:35Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "paused_tonight": true,
+  "hours_done": 1.8,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 5.5,
+    "done_h": 1.8
+   }
+  }
+ },
+ {
+  "id": "3d5c21b5-8b20-4d73-906a-7e2c89073ed5",
+  "target": {
+   "id": null,
+   "name": "M33 Core P3",
+   "catalog_id": "",
+   "ra_hours": 1.577533,
+   "dec_degrees": 30.543678,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic M33 Core panel 3 of 4",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 4,
+    "acquired_s": 720.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 18,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 62,
+  "budget_hours": 5.5,
+  "filter_mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "G": 120.0,
+   "L": 180.0,
+   "R": 120.0,
+   "Ha": 300.0,
+   "B": 120.0
+  },
+  "created_at": "2026-11-08T14:09:35.308844",
+  "updated_at": "2026-11-08T14:09:35.308844",
+  "total_integration_hours": 5.5,
+  "completion_pct": 4,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "afedb6060051",
+   "name": "M33 Core",
+   "panel": 3,
+   "row": 2,
+   "col": 1,
+   "of": 4,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.5641,
+    "dec_degrees": 30.66,
+    "rows": 2,
+    "cols": 2,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 45.3,
+    "span_h_arcmin": 30.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 4.0,
+    "order": "in_order",
+    "created_utc": "2026-11-08T14:09:35Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "paused_tonight": true,
+  "hours_done": 0.2,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 5.5,
+    "done_h": 0.2
+   }
+  }
+ },
+ {
+  "id": "b0828764-2a21-4a07-b44f-8ff00f7b9fda",
+  "target": {
+   "id": null,
+   "name": "M33 Core P4",
+   "catalog_id": "",
+   "ra_hours": 1.550667,
+   "dec_degrees": 30.543678,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic M33 Core panel 4 of 4",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 40,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 18,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 20,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 62,
+  "budget_hours": 5.5,
+  "filter_mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "G": 120.0,
+   "L": 180.0,
+   "R": 120.0,
+   "Ha": 300.0,
+   "B": 120.0
+  },
+  "created_at": "2026-11-08T14:09:35.308844",
+  "updated_at": "2026-11-08T14:09:35.308844",
+  "total_integration_hours": 5.5,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "afedb6060051",
+   "name": "M33 Core",
+   "panel": 4,
+   "row": 2,
+   "col": 2,
+   "of": 4,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.5641,
+    "dec_degrees": 30.66,
+    "rows": 2,
+    "cols": 2,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 45.3,
+    "span_h_arcmin": 30.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 4.0,
+    "order": "in_order",
+    "created_utc": "2026-11-08T14:09:35Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "G": 12,
+   "L": 36,
+   "R": 12,
+   "Ha": 27,
+   "B": 12
+  },
+  "paused_tonight": true,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 5.5,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "66b0ff21-c04c-43a2-9b07-7302602ab047",
+  "target": {
+   "id": null,
+   "name": "NGC 1514",
+   "catalog_id": "",
+   "ra_hours": 4.15472,
+   "dec_degrees": 30.77583,
+   "constellation": "",
+   "object_type": "PN (Crystal Ball), broadband LRGB",
+   "magnitude": null,
+   "angular_size_arcmin": 2.2,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 3.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 30,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 120.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 15,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 15,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 15,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 61,
+  "budget_hours": 3.0,
+  "filter_mix": null,
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": null,
+  "created_at": "2026-11-07T14:31:19.431685",
+  "updated_at": "2026-11-07T14:31:19.431685",
+  "total_integration_hours": 3.0,
+  "completion_pct": 1,
+  "active": true,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 50.0,
+   "R": 16.7,
+   "G": 16.7,
+   "B": 16.7
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 3.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "2513b9bb-23ae-45c6-9896-e902d6b16354",
+  "target": {
+   "id": null,
+   "name": "Crab Nebula",
+   "catalog_id": "M 1",
+   "ra_hours": 5.575,
+   "dec_degrees": 22.01,
+   "constellation": "",
+   "object_type": "supernova remnant",
+   "magnitude": 8.4,
+   "angular_size_arcmin": 7.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 180.0,
+    "count": 96,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 180.0,
+    "count": 72,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "SII",
+    "exposure_seconds": 180.0,
+    "count": 72,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 59,
+  "budget_hours": 12.0,
+  "filter_mix": {
+   "Ha": 40,
+   "OIII": 30,
+   "SII": 30
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": null,
+  "created_at": "2026-11-07T14:24:48.260958",
+  "updated_at": "2026-11-07T14:24:48.260958",
+  "total_integration_hours": 12.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 40,
+   "OIII": 30,
+   "SII": 30
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 12.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "1c46cd15-0b15-47a0-9513-96d6957bb6eb",
+  "target": {
+   "id": null,
+   "name": "NGC 891",
+   "catalog_id": "NGC 891",
+   "ra_hours": 2.37595,
+   "dec_degrees": 42.34914,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": 10.0,
+   "angular_size_arcmin": 13.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 15.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 150,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 120.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 120.0,
+    "count": 75,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "G",
+    "exposure_seconds": 120.0,
+    "count": 75,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 120.0,
+    "count": 75,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 58,
+  "budget_hours": 15.0,
+  "filter_mix": null,
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": null,
+  "created_at": "2026-11-07T14:24:48.504241",
+  "updated_at": "2026-11-07T14:24:48.504241",
+  "total_integration_hours": 15.0,
+  "completion_pct": 0,
+  "active": true,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 50.0,
+   "R": 16.7,
+   "G": 16.7,
+   "B": 16.7
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 15.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "b1d31d5e-4cea-44b2-a795-ab0ae238433b",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P1",
+   "catalog_id": "",
+   "ra_hours": 1.590964,
+   "dec_degrees": 30.891703,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 1 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 1,
+   "row": 1,
+   "col": 1,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "98fe1c01-45c4-4e79-a5ec-7e7824c72927",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P2",
+   "catalog_id": "",
+   "ra_hours": 1.564,
+   "dec_degrees": 30.892332,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 2 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 2,
+   "row": 1,
+   "col": 2,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "e1238354-47ff-451e-967f-8230853b4f32",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P3",
+   "catalog_id": "",
+   "ra_hours": 1.537036,
+   "dec_degrees": 30.891703,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 3 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 3,
+   "row": 1,
+   "col": 3,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "30157ae1-559f-46ef-ac35-9bb0f9302d9a",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P4",
+   "catalog_id": "",
+   "ra_hours": 1.590899,
+   "dec_degrees": 30.659377,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 4 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 4,
+   "row": 2,
+   "col": 1,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "bbc229ed-c48e-4415-baa1-29ea57460a7b",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P5",
+   "catalog_id": "",
+   "ra_hours": 1.564,
+   "dec_degrees": 30.66,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 5 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 5,
+   "row": 2,
+   "col": 2,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "7ff20011-40da-404f-839c-8e5ea1331eb4",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P6",
+   "catalog_id": "",
+   "ra_hours": 1.537101,
+   "dec_degrees": 30.659377,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 6 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 6,
+   "row": 2,
+   "col": 3,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "4fcfbec6-4d8a-4afc-8add-843310155332",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P7",
+   "catalog_id": "",
+   "ra_hours": 1.590834,
+   "dec_degrees": 30.427051,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 7 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 7,
+   "row": 3,
+   "col": 1,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "ab35d3a0-d1d3-4262-a3f9-14f3ac2819ea",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P8",
+   "catalog_id": "",
+   "ra_hours": 1.564,
+   "dec_degrees": 30.427668,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 8 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 8,
+   "row": 3,
+   "col": 2,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "61092a73-dcc5-4890-9ba2-171cafb37482",
+  "target": {
+   "id": null,
+   "name": "Triangulum Galaxy Mosaic P9",
+   "catalog_id": "",
+   "ra_hours": 1.537166,
+   "dec_degrees": 30.427051,
+   "constellation": "",
+   "object_type": "galaxy",
+   "magnitude": null,
+   "angular_size_arcmin": 24.5,
+   "tier": "good",
+   "notes": "PS-111 mosaic Triangulum Galaxy Mosaic panel 9 of 9",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "L",
+    "exposure_seconds": 120.0,
+    "count": 60,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 2.0,
+  "filter_mix": {
+   "L": 100
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "L": 120.0
+  },
+  "created_at": "2026-10-16T19:21:34.201388",
+  "updated_at": "2026-10-16T19:21:34.201388",
+  "total_integration_hours": 2.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": {
+   "id": "878c60c6458e",
+   "name": "Triangulum Galaxy Mosaic",
+   "panel": 9,
+   "row": 3,
+   "col": 3,
+   "of": 9,
+   "companion": "48c77fa5-0c2c-4a2b-906e-68270e333082",
+   "layout": {
+    "ra_hours": 1.564,
+    "dec_degrees": 30.66,
+    "rows": 3,
+    "cols": 3,
+    "overlap_pct": 15.0,
+    "pa_deg": 0.0,
+    "fov_w_deg": 0.40833,
+    "fov_h_deg": 0.27333,
+    "span_w_arcmin": 66.2,
+    "span_h_arcmin": 44.3,
+    "pa_source": "north up (0 deg): no rc16 plate solves on record; check the first panel's solve and re-plan if the camera sits at another angle",
+    "rig": "rc16",
+    "hours_per_panel": 2.0,
+    "order": "in_order",
+    "created_utc": "2026-10-16T19:21:34Z"
+   }
+  },
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "broadband",
+  "mix": {
+   "L": 100
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 2.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "seed-m42-orion-core",
+  "target": {
+   "id": null,
+   "name": "Orion Nebula",
+   "catalog_id": "M 42",
+   "ra_hours": 5.588056,
+   "dec_degrees": -5.383333,
+   "constellation": "Orion",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": null,
+   "tier": "best",
+   "notes": "Piggy-600 HDR goal (2026-10-28): 120 s main subs plus a 15 s short set (10% of the time) for the Trapezium / Huygens core, stacked apart (osc_hdr/master_OSC_short) and blended into the clipped core. Rises about 21:30 local in late October at AARO: a second-half-of-the-night target.",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 8.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "OSC",
+    "exposure_seconds": 120.0,
+    "count": 216,
+    "gain": 100,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": 15.0,
+    "hdr_short_count": 192,
+    "hdr_short_acquired": 0,
+    "rig": "piggyback"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 8.0,
+  "filter_mix": null,
+  "hdr": {
+   "OSC": 15
+  },
+  "hdr_fraction": 0.1,
+  "exposure_overrides": {
+   "OSC": 120
+  },
+  "created_at": "2026-10-28T14:47:47.210339",
+  "updated_at": "2026-10-28T14:47:47.210339",
+  "total_integration_hours": 8.0,
+  "completion_pct": 0,
+  "active": true,
+  "driving_rig": "piggyback",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 35.0,
+   "OIII": 30.0,
+   "SII": 35.0
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "piggyback": {
+    "goal_h": 8.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "eb5666c3-acf5-4dbd-b0b9-8859ea16a809",
+  "target": {
+   "id": null,
+   "name": "Pacman Nebula",
+   "catalog_id": "NGC 281",
+   "ra_hours": 0.878,
+   "dec_degrees": 56.63,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 35.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 15.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 34,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 21,
+    "acquired_s": 6300.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 300.0,
+    "count": 29,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 9,
+    "acquired_s": 2700.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "SII",
+    "exposure_seconds": 300.0,
+    "count": 34,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 5,
+    "acquired_s": 1620.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 8.0,
+  "filter_mix": null,
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "Ha": 300.0,
+   "OIII": 300.0,
+   "SII": 300.0
+  },
+  "created_at": "2026-11-17T22:41:00.178470",
+  "updated_at": "2026-11-17T22:41:00.178470",
+  "total_integration_hours": 8.0,
+  "completion_pct": 36,
+  "active": true,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 35.0,
+   "OIII": 30.0,
+   "SII": 35.0
+  },
+  "paused_tonight": false,
+  "hours_done": 3.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 8.1,
+    "done_h": 3.0
+   }
+  }
+ },
+ {
+  "id": "98e1d2f8-30a4-493f-ab5d-1bdbc96f024a",
+  "target": {
+   "id": null,
+   "name": "Elephant Trunk Nebula",
+   "catalog_id": "IC 1396",
+   "ra_hours": 21.647,
+   "dec_degrees": 57.5,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 170.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 25.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 180.0,
+    "count": 56,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 180.0,
+    "count": 48,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "SII",
+    "exposure_seconds": 180.0,
+    "count": 56,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 8.0,
+  "filter_mix": null,
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": null,
+  "created_at": "2026-11-17T22:41:00.485617",
+  "updated_at": "2026-11-17T22:41:00.485617",
+  "total_integration_hours": 8.0,
+  "completion_pct": 0,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 35.0,
+   "OIII": 30.0,
+   "SII": 35.0
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 8.0,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "ce34ffb9-5296-4630-8e0c-5027c6e1f2be",
+  "target": {
+   "id": null,
+   "name": "Elephant Trunk vdB 142",
+   "catalog_id": "vdB 142",
+   "ra_hours": 21.6017,
+   "dec_degrees": 57.5,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 20.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 10.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 34,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 8,
+    "acquired_s": 2400.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 300.0,
+    "count": 29,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 4,
+    "acquired_s": 1200.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "SII",
+    "exposure_seconds": 300.0,
+    "count": 34,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 50,
+  "budget_hours": 8.0,
+  "filter_mix": null,
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "Ha": 300.0,
+   "OIII": 300.0,
+   "SII": 300.0
+  },
+  "created_at": "2026-11-17T22:41:23.922277",
+  "updated_at": "2026-11-17T22:41:23.922277",
+  "total_integration_hours": 8.0,
+  "completion_pct": 12,
+  "active": true,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 35.0,
+   "OIII": 30.0,
+   "SII": 35.0
+  },
+  "paused_tonight": false,
+  "hours_done": 1.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 8.1,
+    "done_h": 1.0
+   }
+  }
+ },
+ {
+  "id": "c612ffae-12a8-40f0-a430-769a84c1fcdc",
+  "target": {
+   "id": null,
+   "name": "Soul Nebula",
+   "catalog_id": "IC 1848",
+   "ra_hours": 2.852,
+   "dec_degrees": 60.43,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 60.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 20.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 300.0,
+    "count": 34,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 300.0,
+    "count": 29,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "SII",
+    "exposure_seconds": 300.0,
+    "count": 34,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 45,
+  "budget_hours": 8.0,
+  "filter_mix": null,
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": {
+   "Ha": 300.0,
+   "OIII": 300.0,
+   "SII": 300.0
+  },
+  "created_at": "2026-11-21T14:34:30.829057",
+  "updated_at": "2026-11-21T14:34:30.829057",
+  "total_integration_hours": 8.0,
+  "completion_pct": 0,
+  "active": true,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 35.0,
+   "OIII": 30.0,
+   "SII": 35.0
+  },
+  "paused_tonight": false,
+  "hours_done": 0.0,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 8.1,
+    "done_h": 0.0
+   }
+  }
+ },
+ {
+  "id": "1d226b13-5f67-4236-bdf7-6b59e3d23ba6",
+  "target": {
+   "id": null,
+   "name": "Crescent Nebula",
+   "catalog_id": "NGC 6888",
+   "ra_hours": 20.20181,
+   "dec_degrees": 38.355,
+   "constellation": "",
+   "object_type": "emission nebula",
+   "magnitude": null,
+   "angular_size_arcmin": 25.0,
+   "tier": "good",
+   "notes": "",
+   "astrobin_url": null,
+   "astrobin_image_count": 0,
+   "recommended_total_hours": 25.0
+  },
+  "exposure_plans": [
+   {
+    "filter_type": "Ha",
+    "exposure_seconds": 900.0,
+    "count": 26,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 7,
+    "acquired_s": 6300.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "OIII",
+    "exposure_seconds": 900.0,
+    "count": 22,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 7,
+    "acquired_s": 6600.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "SII",
+    "exposure_seconds": 900.0,
+    "count": 26,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 1,
+    "acquired_s": 900.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "L",
+    "exposure_seconds": 180.0,
+    "count": 12,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "R",
+    "exposure_seconds": 180.0,
+    "count": 8,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "G",
+    "exposure_seconds": 180.0,
+    "count": 8,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   },
+   {
+    "filter_type": "B",
+    "exposure_seconds": 180.0,
+    "count": 8,
+    "gain": 200,
+    "offset": 256,
+    "binning": 1,
+    "acquired": 0,
+    "acquired_s": 0.0,
+    "hdr_short_seconds": null,
+    "hdr_short_count": 0,
+    "hdr_short_acquired": 0,
+    "rig": "rc16"
+   }
+  ],
+  "priority": 0,
+  "budget_hours": 20.0,
+  "filter_mix": {
+   "Ha": 32,
+   "OIII": 27,
+   "SII": 32,
+   "L": 3,
+   "R": 2,
+   "G": 2,
+   "B": 2
+  },
+  "hdr": null,
+  "hdr_fraction": null,
+  "exposure_overrides": null,
+  "created_at": "2026-09-26T03:08:53.598248",
+  "updated_at": "2026-09-26T03:08:53.598248",
+  "total_integration_hours": 20.0,
+  "completion_pct": 19,
+  "active": false,
+  "driving_rig": "rc16",
+  "min_alt_deg": null,
+  "require_calibration": true,
+  "frame_center_ra_hours": null,
+  "frame_center_dec_degrees": null,
+  "mosaic": null,
+  "goal_snr": null,
+  "feature_signal_e_s": null,
+  "feature_rig": null,
+  "feature_note": "",
+  "qa_overrides": null,
+  "ha_first_h": null,
+  "kind": "narrowband",
+  "mix": {
+   "Ha": 32,
+   "OIII": 27,
+   "SII": 32,
+   "L": 3,
+   "R": 2,
+   "G": 2,
+   "B": 2
+  },
+  "paused_tonight": false,
+  "hours_done": 3.8,
+  "hours_by_rig": {
+   "rc16": {
+    "goal_h": 20.3,
+    "done_h": 3.8
+   }
+  }
+ }
+]

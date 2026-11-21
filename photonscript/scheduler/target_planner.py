@@ -584,6 +584,138 @@ def _apply_deep_windows(sequence_targets, pick: str, vis_by_name: dict,
     return _put_windows(ordered, alloc, ha_first_by_name), alloc
 
 
+GAP_FILL_MIN_S = 600.0   # an RC16 gap (or a fill window) shorter is left alone
+
+
+def _utc_iso(t: datetime) -> str:
+    return t.isoformat() + "Z"
+
+
+def gap_fill(sequence_targets, visible_projects, consider, *, start: datetime,
+             end: datetime, moon: dict | None, promoted: bool,
+             ha_first_by_name: dict, skipped: dict, info: dict) -> list:
+    """2026-11-21: fill every RC16 gap after the window allocation.
+
+    The priority walk books tonight as one pool of hours, but the targets'
+    visibility windows overlap: high-priority goals that set early (M33 Core,
+    Pacman, Elephant Trunk) used the pool up, the walk stopped, and Soul
+    Nebula (up all morning) was never looked at. The windows then ended when
+    the last target set (09:36Z) and the RC16 idled 2.8 h to dawn.
+
+    Every gap of at least GAP_FILL_MIN_S between `start` and `end` (or the
+    start of an end-of-night fill window, which the generator runs last)
+    goes to a goal not in the plan yet: visible tonight and active (so not
+    paused tonight, not held by the mosaic gate), not skipped by a rule in
+    the walk, and passed through the same rules again (`consider`: the moon
+    fit, the unguided narrowband rule, the moonless tail, the broadband
+    deferral). Among the goals usable for at least half the gap the highest
+    priority wins (then the longest window); with none, the longest window.
+    The window is the gap clipped to the goal's usable span (above the
+    planner's 30 deg floor, the moon caps for broadband-only); exposures are
+    fitted to it. What the window leaves of the gap is tried again.
+
+    info["gap_fill"] lists every gap, with the goal that filled it or
+    target None and the reason; info["gap_fill_note"] sums it up. Returns
+    the targets in window order with handoffs at each window end (the last
+    target keeps the mount, as before)."""
+    from photonscript.scheduler.moon_fill import gaps
+    targets = list(sequence_targets)
+    stop = end
+    fill_from = [t.fill_from_utc for t in targets
+                 if getattr(t, "fill_from_utc", None) is not None]
+    if fill_from:
+        stop = min(stop, min(fill_from))
+    spans = [(t.window_start_utc, t.window_end_utc) for t in targets]
+    queue = gaps(spans, start, stop, GAP_FILL_MIN_S)
+    if not queue:
+        return sequence_targets
+    planned = {t.name for t in targets}
+    cands = [vp for vp in visible_projects
+             if vp["project"].target.name not in planned
+             and vp["project"].target.name not in skipped]
+    rows, fills, used = [], [], set()
+    while queue:
+        g0, g1 = queue.pop(0)
+        gap_s = (g1 - g0).total_seconds()
+        best = None
+        for vp in cands:
+            proj = vp["project"]
+            name = proj.target.name
+            if name in used:
+                continue
+            vis = vp["visibility"]
+            r, s = vis.get("rise_time"), vis.get("set_time")
+            lo = max(g0, r) if r is not None else g0
+            hi = min(g1, s) if s is not None else g1
+            if (hi - lo).total_seconds() < GAP_FILL_MIN_S:
+                continue
+            clipped = dict(vis, rise_time=lo, set_time=hi,
+                           hours=(hi - lo).total_seconds() / 3600)
+            got = consider(dict(vp, visibility=clipped), clipped["hours"],
+                           float("inf") if promoted else None)
+            if got is None:
+                continue
+            _transit, t, need_s, _alloc, _bb = got
+            e = _window_entries([t], {name: vis}, {name: need_s},
+                                {name: proj.priority}, end, moon)[0]
+            w0 = max(g0, e["up_from"]) if e["up_from"] is not None else g0
+            w1 = min(g1, e["up_until"]) if e["up_until"] is not None else g1
+            win_s = (w1 - w0).total_seconds()
+            if win_s < GAP_FILL_MIN_S:
+                continue
+            key = (win_s >= 0.5 * gap_s, proj.priority if win_s >= 0.5 * gap_s
+                   else 0, win_s)
+            if best is None or key > best[0]:
+                best = (key, vp, t, w0, w1)
+        row = {"gap_start_utc": _utc_iso(g0), "gap_end_utc": _utc_iso(g1),
+               "gap_h": round(gap_s / 3600, 2)}
+        if best is None:
+            row.update(target=None, reason="no active goal that owes RC16 time "
+                       "is up then and allowed tonight")
+            rows.append(row)
+            logger.info("Gap fill: RC16 gap %s-%sZ stays open (%s)",
+                        f"{g0:%H:%M}", f"{g1:%H:%M}", row["reason"])
+            continue
+        _key, vp, t, w0, w1 = best
+        proj = vp["project"]
+        used.add(t.name)
+        _put_windows([t], {"windows": {t.name: (w0, w1)}, "handoff": {},
+                           "fill": None}, ha_first_by_name)
+        fills.append(t)
+        row.update(target=t.name, project_id=getattr(proj, "id", None),
+                   priority=proj.priority, window_start_utc=_utc_iso(w0),
+                   window_end_utc=_utc_iso(w1),
+                   hours=round((w1 - w0).total_seconds() / 3600, 2),
+                   exposures=[f"{e.count}x{e.exposure_seconds:.0f}s "
+                              f"{e.filter_type.value}" for e in t.exposures])
+        rows.append(row)
+        logger.info("Gap fill: RC16 gap %s-%sZ -> %s %s-%sZ (priority %s)",
+                    f"{g0:%H:%M}", f"{g1:%H:%M}", t.name, f"{w0:%H:%M}",
+                    f"{w1:%H:%M}", proj.priority)
+        for a, b in ((g0, w0), (w1, g1)):
+            if (b - a).total_seconds() >= GAP_FILL_MIN_S:
+                queue.append((a, b))
+        queue.sort()
+    info["gap_fill"] = rows
+    filled = [r for r in rows if r.get("target")]
+    open_ = [r for r in rows if not r.get("target")]
+    info["gap_fill_note"] = "Gap fill: " + "; ".join(
+        [f"{r['target']} {r['window_start_utc'][11:16]}-"
+         f"{r['window_end_utc'][11:16]}Z" for r in filled]
+        + [f"{r['gap_start_utc'][11:16]}-{r['gap_end_utc'][11:16]}Z open"
+           for r in open_])
+    if not fills:
+        return sequence_targets
+    out = sorted(targets + fills, key=lambda t: t.window_start_utc)
+    keeps_end = not fill_from
+    for i, t in enumerate(out):
+        if i < len(out) - 1 or not keeps_end:
+            t.handoff_utc = t.window_end_utc
+        else:
+            t.handoff_utc = None   # the last one keeps the mount to the loop end
+    return out
+
+
 def fit_moon_tag(moon_tag, mw: dict | None):
     """The moon tag _fit_by_moon uses. An "NB" night the shared moon rule
     does not defer (moon.broadband_deferred: the moon sets before dawn, or
@@ -900,12 +1032,16 @@ def plan_night_sequence(
     ha_first_by_name = {}   # name -> (Ha seconds done, Ha first seconds)
     skipped: dict = {}      # moon fill: goal -> why it has nothing tonight
 
-    for vp in visible_projects:
-        if remaining_hours <= 0.3:
-            break
-
+    def _consider(vp, vis_hours, bb_cap):
+        """One goal through tonight's rules (RC16 plans only, the unguided
+        narrowband rule, the Piggy hold, the moonless tail of a promoted NB
+        night, the moon fit, the shared broadband deferral), fitted into
+        vis_hours. bb_cap: moonless seconds left for broadband-only targets
+        (None: no such cap tonight). Returns (transit, seq_target, need_s,
+        alloc_time, bb_only), or None with skipped[name] saying why. Used by
+        the priority walk and by the gap fill, so both apply the same rules."""
+        nonlocal _gen_moon
         proj: ImagingProject = vp["project"]
-        vis_hours = min(vp["visibility"]["hours"], remaining_hours)
 
         # Figure out how many exposures we can fit
         remaining_exposures = []
@@ -922,6 +1058,8 @@ def plan_night_sequence(
             if nb:
                 remaining_exposures = [e for e in remaining_exposures
                                        if e.filter_type.value not in _NB_FILTERS]
+            if nb and not any(d["target"] == proj.target.name
+                              for d in info["rc16_nb_unguided"]):
                 info["rc16_nb_unguided"].append({
                     "target": proj.target.name,
                     "filters": [e.filter_type.value for e in nb],
@@ -945,7 +1083,7 @@ def plan_night_sequence(
                                          if any(d["target"] == proj.target.name
                                                 for d in info["rc16_nb_unguided"])
                                          else "nothing owed on the RC16")
-            continue
+            return None
         # PS-180: what the goal still needs (before tonight's scale-down)
         need_s = sum(owed_seconds(e) for e in remaining_exposures) * 1.15
         if proj is pick_proj:
@@ -955,19 +1093,19 @@ def plan_night_sequence(
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
-        bb_only = bb_cap_s is not None and all(
+        bb_only = bb_cap is not None and all(
             e.filter_type.value not in _NB_FILTERS for e in remaining_exposures)
         if bb_only:
             # promoted NB night: a broadband-only target fits the moonless
             # time it is up for, out of what the broadband targets before it
             # left (one shared moonless tail)
-            usable_s = min(moonless_overlap_s(vp["visibility"], bb_win), bb_cap_s)
+            usable_s = min(moonless_overlap_s(vp["visibility"], bb_win), bb_cap)
             if usable_s < 0.5 * 3600:
                 logger.info("Skipping %s tonight: broadband-only and up for "
                             "%.1f h of the moonless time left",
                             proj.target.name, usable_s / 3600)
                 skipped[proj.target.name] = "broadband deferred by the moon"
-                continue
+                return None
             available_seconds = min(available_seconds, usable_s * 0.85)
         # 2026-11-20: only a broadband-only target takes the promoted tag; a
         # mixed target keeps the night's "NB" (narrowband only), else its
@@ -991,7 +1129,7 @@ def plan_night_sequence(
         if not remaining_exposures:
             # e.g. a broadband-only target on a bright-moon night -> skip tonight
             skipped[proj.target.name] = "broadband deferred by the moon"
-            continue
+            return None
         # Same moon rule as the sequence generator (moon.broadband_deferred):
         # a broadband-only target the generator would empty is dropped here, so
         # the plan and the sequence agree (PS-27).
@@ -1013,17 +1151,9 @@ def plan_night_sequence(
                                 "moon defers broadband (%s)", proj.target.name,
                                 describe_moon(_gen_moon))
                     skipped[proj.target.name] = "broadband deferred by the moon"
-                    continue
+                    return None
 
         alloc_time = sum(owed_seconds(e) for e in remaining_exposures) / 3600
-        if proj is pick_proj:
-            # the pick holds its time up (or until done); the rest stays for
-            # the split before / after it
-            remaining_hours -= min(vis_hours, need_s / 3600)
-        else:
-            remaining_hours -= alloc_time * 1.15  # account for overhead
-        if bb_only:
-            bb_cap_s = max(0.0, bb_cap_s - alloc_time * 3600 * 1.15)
 
         seq_target = NinaSequenceTarget(
             name=proj.target.name,
@@ -1050,6 +1180,25 @@ def plan_night_sequence(
             transit = vp.get("mosaic_transit") or transit
             if transit != datetime.max:
                 transit = transit + timedelta(seconds=int(m.get("panel") or 0))
+        return transit, seq_target, need_s, alloc_time, bb_only
+
+    for vp in visible_projects:
+        if remaining_hours <= 0.3:
+            break
+        proj = vp["project"]
+        vis_hours = min(vp["visibility"]["hours"], remaining_hours)
+        got = _consider(vp, vis_hours, bb_cap_s)
+        if got is None:
+            continue
+        transit, seq_target, need_s, alloc_time, bb_only = got
+        if proj is pick_proj:
+            # the pick holds its time up (or until done); the rest stays for
+            # the split before / after it
+            remaining_hours -= min(vis_hours, need_s / 3600)
+        else:
+            remaining_hours -= alloc_time * 1.15  # account for overhead
+        if bb_only:
+            bb_cap_s = max(0.0, bb_cap_s - alloc_time * 3600 * 1.15)
         sequence_targets.append((transit, seq_target))
         vis_by_name[seq_target.name] = vp["visibility"]
         need_by_name[seq_target.name] = need_s
@@ -1079,8 +1228,9 @@ def plan_night_sequence(
     if pick is not None and not deep_on:
         info["deep_note"] = (f"{pick['target']} has nothing the moon allows "
                              "tonight: split")
+    moon = None   # the generator's moon window (windows and gap fill)
+    deep_alloc = None
     if sequence_targets and (deep_on or bool(getattr(config, "plan_target_windows", True))):
-        moon = None
         if getattr(config, "moon_aware_planning", True):
             # the generator's own moon window: the window cap and the
             # sequence's "until moonrise" conditions use the same moonrise
@@ -1091,7 +1241,6 @@ def plan_night_sequence(
             except Exception as e:  # noqa: BLE001
                 logger.warning("moon window unavailable: %s", e)
                 moon = {}
-        deep_alloc = None
         if deep_on:
             kept, deep_alloc = _apply_deep_windows(
                 sequence_targets, pick["target"], vis_by_name, need_by_name,
@@ -1117,6 +1266,21 @@ def plan_night_sequence(
             sequence_targets = _apply_windows(
                 sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
                 dark_start, dark_end, date_utc, moon, ha_first_by_name)
+
+    # 2026-11-21 gap fill: the priority walk books the night as one pool of
+    # hours, so goals that set early can use it up while the RC16 then idles
+    # after the last of them sets; every gap goes to the best goal up then.
+    # A deep night that took the night keeps its own split (allocate_deep).
+    info["gap_fill"], info["gap_fill_note"] = [], None
+    if (sequence_targets and deep_alloc is None
+            and bool(getattr(config, "plan_gap_fill", True))
+            and all(t.window_start_utc is not None and t.window_end_utc is not None
+                    for t in sequence_targets)):
+        sequence_targets = gap_fill(
+            sequence_targets, visible_projects, _consider,
+            start=max(dark_start, date_utc), end=dark_end,
+            moon=moon, promoted=bb_cap_s is not None,
+            ha_first_by_name=ha_first_by_name, skipped=skipped, info=info)
 
     # 2026-10-25 moon fill: a bright-moon night that left the RC16 (and so
     # the Piggy-600 on the same mount) with nothing gets a Piggy-driven

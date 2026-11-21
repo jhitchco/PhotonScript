@@ -347,6 +347,10 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         # Piggy-driven and which goals carry the pointing
         "moon_fill": plan_info.get("moon_fill"),
         "moon_fill_note": plan_info.get("moon_fill_note"),
+        # 2026-11-21 gap fill (target_planner.gap_fill): which goal fills
+        # which RC16 gap, or why a gap stays open
+        "gap_fill": plan_info.get("gap_fill") or [],
+        "gap_fill_note": plan_info.get("gap_fill_note"),
         "targets": target_names,
         "events": events,
         "twilight": twilight,

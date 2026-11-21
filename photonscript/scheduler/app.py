@@ -434,6 +434,10 @@ async def api_tonight_plan():
         # the RC16 is a Piggy-driven night of pointing carriers
         "moon_fill": info.get("moon_fill"),
         "moon_fill_note": info.get("moon_fill_note"),
+        # 2026-11-21 gap fill: which goal fills which RC16 gap (or why a
+        # gap stays open)
+        "gap_fill": info.get("gap_fill") or [],
+        "gap_fill_note": info.get("gap_fill_note"),
         "twilight": {
             k: v.isoformat() if v else None
             for k, v in twilight.items()
@@ -921,6 +925,7 @@ _CONFIG_FIELDS = [
     ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
     ("plan_target_windows", "PS_PLAN_TARGET_WINDOWS", "Target windows (PS-180): each target's loop hands the mount to the next at its planned window end; leftover time goes to the highest-priority target still up", "Imaging", "bool", False, False),
     ("plan_window_min_minutes", "PS_PLAN_WINDOW_MIN_MINUTES", "Target windows: shortest window (min) a target is planned for tonight", "Imaging", "int", False, False),
+    ("plan_gap_fill", "PS_PLAN_GAP_FILL", "Gap fill: an RC16 gap of 10 min or more after the target windows (the tail after the last target sets, too) goes to the best active goal up then that still owes RC16 time", "Imaging", "bool", False, False),
     ("plan_night_mode", "PS_PLAN_NIGHT_MODE", "Night mode (deep night): split (each night shared among the goals by priority) | deep (one goal gets the whole dark window, both rigs; split after it sets or is done). The dashboard can set tonight only", "Imaging", "str", False, False),
     ("plan_moon_piggy_fill", "PS_PLAN_MOON_PIGGY_FILL", "Moon fill: on a bright-moon night with the Piggy-600 on, an empty (or mostly unused) plan becomes a Piggy-driven night: the RC16 points at the best goal (Piggy OSC owed first, away from the moon) shooting Ha as a pointing carrier", "Imaging", "bool", False, False),
     ("plan_moon_fill_min_used_pct", "PS_PLAN_MOON_FILL_MIN_USED_PCT", "Moon fill: fill the gaps when the planned windows use less than this % of the dark time left", "Imaging", "float", False, False),

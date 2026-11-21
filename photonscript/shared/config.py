@@ -325,6 +325,12 @@ class PhotonScriptConfig(BaseSettings):
     plan_target_windows: bool = True
     plan_window_min_minutes: int = 30  # shortest window worth a slew + AF +
     # center; a target that cannot get this much tonight is left out
+    # Gap fill (2026-11-21, target_planner.gap_fill): after the windows, an
+    # RC16 gap of 10 min or more (the tail after the last target sets, too)
+    # goes to the best active goal up then that still owes RC16 time and the
+    # night's rules allow (moon, unguided narrowband, mosaic order, paused
+    # tonight). 2026-11-20/21: 2.8 h idle to dawn after M33 Core set.
+    plan_gap_fill: bool = True
     # Deep night (scheduler/deep_night.py): "split" = the night is shared
     # among the goals by priority (PS-180 windows); "deep" = ONE goal (the
     # best deep-night score, or the tonight-only override's target) gets
