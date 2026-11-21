@@ -317,3 +317,13 @@ def test_local_dates_from_site_longitude():
     assert pl.localize_dates([f, g], "America/New_York") == 1
     assert f.date_loc == "2026-10-07T23:01:38" and f.night == "2026-10-07"
     assert g.date_loc == "2026-11-20T19:29:00"
+
+
+def test_folder_packet_names_the_seestar_site_not_aaro(works, tmp_path):
+    out = tmp_path / "Staging" / "site"
+    pl.run(_opts(tmp_path, [works / "NGC 281_sub"], out=out), echo=lambda s: None)
+    pk = next((out / "astrobin").glob("*_astrobin_packet.md")).read_text("ascii")
+    assert "Seestar site" in pk and "43.014 N" in pk and "71.468 W" in pk
+    rows = next((out / "astrobin").glob("*_acquisition.csv")).read_text("ascii").splitlines()[1:]
+    assert all(r.split(",")[11] == "" for r in rows)          # bortle unknown, never AARO's 2
+    assert rows[0].startswith("2026-10-07,")                   # local evening date, not UTC

@@ -1124,7 +1124,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         darks_for = {d.light_exp: len(d.frames) for d in plan.darks.values()}
         flats_for = {k: len(v.frames) for k, v in plan.flats.items()}
         rows_csv = astrobin.acquisition_rows(integrated, darks_for=darks_for, flats_for=flats_for,
-                                             bias=len(plan.bias), bortle=o.bortle)
+                                             bias=len(plan.bias),
+                                             bortle="" if o.folder_mode else o.bortle)
         stamp = datetime.now().strftime("%Y-%m-%d")
         ab = run_dir / "astrobin"
         ab.mkdir(exist_ok=True)
@@ -1170,7 +1171,9 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                                      if g0.focallen and g0.focratio else "?"),
                           "mount": g0.telescope or "not in the header",
                           "software": g0.software or "?"},
-            "location": o.site, "integrated_by_pi": pi_ok, "final": final_img,
+            "location": (dict(psite, name="Seestar site (FITS SITELAT / SITELONG, not AARO)", elev="?",
+                              bortle="?") if o.folder_mode else o.site),
+            "integrated_by_pi": pi_ok, "final": final_img,
             "processing": (folder_processing(o, cfa, integrated, result) if o.folder_mode else
                            "calibration (bias, darks" + (", flats" if flats_for and any(flats_for.values()) else "")
                            + "), CosmeticCorrection, " + ("VNG debayer, " if cfa else "")
