@@ -1490,9 +1490,17 @@ def lint(seq: dict, guided: bool | None = None,
             gated = any("reentry-gate" in str(it.get("Script", ""))
                         and " tracking_test " in str(it.get("Script", ""))
                         for it in _vals(tgt.get("Items")))
+            # PS-270: the planner's gap drift test sits among (or after)
+            # tonight's targets instead of before them
+            pos = next((i for i, (_p, d) in enumerate(targets) if d is tgt), 0)
+            last_target = followed and all(
+                " unguided ladder" in json.dumps(d) for _p, d in targets[pos:])
             after = ("Tonight's targets follow it; its gate runs it again "
                      "after a pause until tonight has the whole ladder."
                      if followed and gated else
+                     "It runs once after tonight's targets (a gap drift "
+                     "test), then the scope parks until dawn."
+                     if last_target else
                      "Tonight's targets follow it; it runs once per night."
                      if followed else
                      "After the ladder the scope parks and holds until "

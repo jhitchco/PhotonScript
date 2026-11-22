@@ -2084,11 +2084,16 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
     ladder_desc = (", ".join(f.value for f in filters) + " x "
                    + "/".join(f"{e:g}" for e in exposures)
                    + f" s, {repeats} each")
+    # PS-270: a planner gap drift test hands the mount on at its window end
+    # (None for the standalone / spliced test and the night's last target)
+    handoff = _handoff_condition(target)
 
     def _guards():
         g = [_safety_condition()]
         if loop_end:
             g.append(_time_condition(*loop_end))
+        if handoff:
+            g.append(_handoff_condition(target))
         return g
 
     items = [
@@ -2096,7 +2101,8 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
                     "Guiding is stopped and never restarted; dithers are off. "
                     f"Ladder: {ladder_desc}. Subs are named '{target.name}'. "
                     "Afterwards open /api/tracking-test/report on the "
-                    "dashboard. " + TRACKING_TEST_PARK_NOTE),
+                    "dashboard. " + (getattr(target, "tracking_test_note", "")
+                                     or TRACKING_TEST_PARK_NOTE)),
         _pushover("Imaging", f"{target.name}: unguided tracking test, "
                   f"slewing (RA {target.ra_hours:.2f}h Dec "
                   f"{target.dec_degrees:+.1f} deg) - {ladder_desc} "
@@ -2139,16 +2145,21 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
                     _altitude_condition(target, min_altitude)]
     if loop_end:
         ladder_conds.append(_time_condition(*loop_end))
+    if handoff:
+        ladder_conds.append(_handoff_condition(target))
     ladder_conds.append(_loop_once())
     items.append(_seq_container(f"{target.name}{TARGET_TRACKING_LADDER_SUFFIX}",
                                 ladder, conditions=ladder_conds))
     items.append(_pushover("Imaging", f"{target.name}: tracking test done - "
                            "open /api/tracking-test/report"))
+    outer = [_safety_condition(), _altitude_condition(target, min_altitude)]
+    if handoff:
+        # past its window (a resume after an unsafe spell): skipped whole,
+        # no slew / AF / center for a ladder that may not shoot
+        outer.append(_handoff_condition(target))
     return _seq_container(
         target.name, items,
-        conditions=[_safety_condition(),
-                    _altitude_condition(target, min_altitude),
-                    _loop_once()],
+        conditions=outer + [_loop_once()],
         triggers=[_meridian_flip_trigger(), _reconnect_trigger()],
         container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
                        "NINA.Sequencer",

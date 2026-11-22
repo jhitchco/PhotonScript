@@ -331,6 +331,17 @@ class PhotonScriptConfig(BaseSettings):
     # night's rules allow (moon, unguided narrowband, mosaic order, paused
     # tonight). 2026-11-20/21: 2.8 h idle to dawn after M33 Core set.
     plan_gap_fill: bool = True
+    # PS-270 gap drift test (target_planner.gap_drift): a gap the gap fill
+    # leaves open (no goal is up then and allowed tonight) of at least
+    # plan_gap_drift_min_s gets a short unguided L drift ladder on the RC16
+    # (a "Tracking test Dawn (<field>)" target, test data only) on a field
+    # well up on the mount's current side, lengths from
+    # plan_gap_drift_exposures (s, comma separated), up to 3 each, the
+    # longest dropped first when the gap is short. Unguided nights only.
+    # 2026-11-21: 11:46-12:26Z idle after Soul Nebula set.
+    plan_gap_drift: bool = True
+    plan_gap_drift_min_s: float = 1200.0
+    plan_gap_drift_exposures: str = "30,60,120,300"
     # Deep night (scheduler/deep_night.py): "split" = the night is shared
     # among the goals by priority (PS-180 windows); "deep" = ONE goal (the
     # best deep-night score, or the tonight-only override's target) gets

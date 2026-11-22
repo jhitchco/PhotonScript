@@ -180,9 +180,19 @@ FIELD_ALT_MIN = 35.0       # every field stays above this for its whole ladder
 MAX_FIELDS = 6
 
 
+def sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
+    """Angular separation (deg) of two RA (hours) / Dec (deg) positions."""
+    r1, d1 = math.radians(ra1_h * 15.0), math.radians(dec1)
+    r2, d2 = math.radians(ra2_h * 15.0), math.radians(dec2)
+    c = (math.sin(d1) * math.sin(d2)
+         + math.cos(d1) * math.cos(d2) * math.cos(r1 - r2))
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
 def place_fields(config, specs: list[dict], start_utc: datetime | None,
                  duration_s: float,
-                 projects: Iterable[Any] | None = None) -> list[dict]:
+                 projects: Iterable[Any] | None = None,
+                 avoid: tuple | None = None) -> list[dict]:
     """2026-11-11 drift ladder: several tracking-test fields run back to back
     from `start_utc`, each `duration_s` long, each at a chosen spot in the sky.
 
@@ -194,7 +204,11 @@ def place_fields(config, specs: list[dict], start_utc: datetime | None,
     angle then declination (galaxies penalised: few stars); none = a plain
     star field at RA = LST(mid) - ha at the spec's declination (default +30).
     Returns one dict per spec in order: name (label + object), ra_hours,
-    dec_degrees, start_utc, alt/ha at start and end, source."""
+    dec_degrees, start_utc, alt/ha at start and end, source.
+
+    avoid (PS-270): (ra_hours, dec_degrees, min_sep_deg), e.g. the moon; a
+    catalog / project field closer than min_sep_deg to it is never picked
+    (the synthetic star field fallback is not checked)."""
     lat = float(getattr(config, "observatory_lat", 31.9))
     lon = float(getattr(config, "observatory_lon", -109.0))
     t = (start_utc or datetime.utcnow()).replace(tzinfo=None)
@@ -225,6 +239,8 @@ def place_fields(config, specs: list[dict], start_utc: datetime | None,
                     continue
                 if min(altitude(ra, dec, t, lat, lon),
                        altitude(ra, dec, end, lat, lon)) < FIELD_ALT_MIN:
+                    continue
+                if avoid and sep_deg(ra, dec, avoid[0], avoid[1]) < avoid[2]:
                     continue
                 score = abs(ha_mid - want_ha)
                 if want_dec is not None:
