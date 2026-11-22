@@ -402,10 +402,6 @@ var SA_NODC = { name: "no distortion correction", sensitivity: 0.50, peakRespons
 var SA_SOFT = { name: "large soft stars", sensitivity: 0.30, peakResponse: 0.80,
                 structureLayers: 8, noiseReduction: 4, maxStarDistortion: 0.95, noDistortion: true };
 
-// A copy of a StarAlignment preset with drizzle data off (PS-265: the
-// own-reference passes and the master alignment never feed drizzle).
-function withNoDrizzle(o) { var c = {}; for (var k in o) c[k] = o[k]; c.noDrizzle = true; return c; }
-
 // One StarAlignment run of `targets` onto `refPath`, output into outDir.
 // Returns executeGlobal's result; a throw counts as false. The caller lists
 // outDir for what registered (a false run can still have written some).
@@ -471,9 +467,15 @@ function registerStack(S, inputs, sharedRef, ownRef, SOUT) {
    if ((n < MIN_FRAMES || n < inputs.length / 2) && ownRef && baseOf(ownRef) !== baseOf(sharedRef)) {
       var selfDir = SOUT + "/reg_self";
       clearDir(selfDir);
-      var ok3 = starAlignPass(ownRef, inputs, selfDir, withNoDrizzle(SA_RELAXED));
+      var ok3 = starAlignPass(ownRef, inputs, selfDir, { name: SA_RELAXED.name, sensitivity: SA_RELAXED.sensitivity,
+                     peakResponse: SA_RELAXED.peakResponse, structureLayers: SA_RELAXED.structureLayers,
+                     noiseReduction: SA_RELAXED.noiseReduction, maxStarDistortion: SA_RELAXED.maxStarDistortion,
+                     noDrizzle: true });
       var lost3 = missingFrom(inputs, selfDir);
-      if (lost3.length) ok3 = starAlignPass(ownRef, lost3, selfDir, withNoDrizzle(SA_NODC)) || ok3;
+      if (lost3.length) ok3 = starAlignPass(ownRef, lost3, selfDir, { name: SA_NODC.name, sensitivity: SA_NODC.sensitivity,
+                     peakResponse: SA_NODC.peakResponse, structureLayers: SA_NODC.structureLayers,
+                     noiseReduction: SA_NODC.noiseReduction, maxStarDistortion: SA_NODC.maxStarDistortion,
+                     noDistortion: true, noDrizzle: true }) || ok3;
       var n3 = inputs.length - missingFrom(inputs, selfDir).length;
       log("[" + S + "] registration pass 3 (relaxed, own reference " + File.extractName(ownRef) + "): " +
           n3 + " of " + inputs.length + (ok3 ? "" : " (StarAlignment returned false)") +
@@ -497,9 +499,15 @@ function alignMaster(S, masterPath, reg) {
    // outside out/master itself: blend.masters() globs master_*.xisf there
    var ownPath = dir + "/master_" + S + "_ownref.xisf";
    if (File.exists(ownPath)) File.remove(ownPath);
-   var ok = starAlignPass(target, [masterPath], dir, withNoDrizzle(SA_RELAXED));
+   var ok = starAlignPass(target, [masterPath], dir, { name: SA_RELAXED.name, sensitivity: SA_RELAXED.sensitivity,
+                     peakResponse: SA_RELAXED.peakResponse, structureLayers: SA_RELAXED.structureLayers,
+                     noiseReduction: SA_RELAXED.noiseReduction, maxStarDistortion: SA_RELAXED.maxStarDistortion,
+                     noDrizzle: true });
    var aligned = dir + "/" + File.extractName(masterPath) + "_r.xisf";
-   if (!File.exists(aligned)) ok = starAlignPass(target, [masterPath], dir, withNoDrizzle(SA_NODC));   // PS-264
+   if (!File.exists(aligned)) ok = starAlignPass(target, [masterPath], dir, { name: SA_NODC.name, sensitivity: SA_NODC.sensitivity,
+                     peakResponse: SA_NODC.peakResponse, structureLayers: SA_NODC.structureLayers,
+                     noiseReduction: SA_NODC.noiseReduction, maxStarDistortion: SA_NODC.maxStarDistortion,
+                     noDistortion: true, noDrizzle: true });   // PS-264
    File.move(masterPath, ownPath);
    if (!File.exists(aligned))
       throw new Error("own-reference master could not be aligned to the shared reference " +
