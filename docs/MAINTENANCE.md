@@ -62,6 +62,14 @@ then equipment connect + preflight) -> `PhotonScript Lock After Logon`
 only within 30 min of a boot (`-Force` by hand). Log:
 `<data_dir>\logs\reboot-recovery.log`.
 
+First thing in the recovery (2026-11-22): the scope Claude session. When no
+`claude` process runs, it opens a PowerShell window in the repo folder
+running `claude --continue --remote-control "scope pc - image the sky"` (a
+new conversation when that folder has none), so the desktop session can reach
+it by name after a reboot. Claude must already be signed in on the scope PC
+(`claude auth login` once, by Jeremy). `-NoClaude` skips it; `-ClaudeDir`,
+`-ClaudeExe` and `-ClaudeSessionName` override the defaults.
+
 One-time setup on the scope PC (Jeremy; Claude never handles the password):
 
 1. Auto-logon: download Sysinternals Autologon from Microsoft
