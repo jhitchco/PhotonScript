@@ -442,12 +442,13 @@ if ($Start) {
         Add-Step ("-Only {0}: {1} :{2} not running, launching it alone" -f $Only, $onlyLabel, $onlyPort)
     }
     # TheSky (NINA and PHD2 drive the Paramount through it). PS-243: opened
-    # here when not running; the mount is only read (IsConnected), never
-    # connected, parked or slewed from here.
+    # here when not running (a full start only: -Only launches ONE app and
+    # nothing else, the remote `apps --start --only` contract); the mount is
+    # only read (IsConnected), never connected, parked or slewed from here.
     $mountDown = $null
     if (-not $SkipTheSkyCheck) {
         $skyProc = @(Get-Process -Name TheSky64 -ErrorAction SilentlyContinue)
-        if ($skyProc.Count -eq 0 -and -not $RequireMount) {
+        if ($skyProc.Count -eq 0 -and -not $RequireMount -and -not $Only) {
             if (-not $TheSkyExe) {
                 $hit = Get-ChildItem -Path "$env:ProgramFiles\Software Bisque", "${env:ProgramFiles(x86)}\Software Bisque" `
                     -Filter TheSky64.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
