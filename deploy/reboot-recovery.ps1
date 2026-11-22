@@ -19,6 +19,14 @@
 #      only what does not answer is launched, on the right profiles, then
 #      equipment connect + preflight through the service.
 #
+# Before step 1 (2026-11-22, after a reboot left the scope PC with nothing
+# open and no Claude session to fix it): the scope Claude session. When no
+# claude process runs, open a PowerShell window in -ClaudeDir running
+#   claude --continue --remote-control "scope pc - image the sky"
+# (a fresh session when that folder has no conversation yet), so the
+# desktop session can reach it by name again. -NoClaude skips it. Claude's
+# own sign-in on this PC is used; nothing here reads or passes a token.
+#
 # Only right after a boot: when the PC has been up longer than
 # -MaxUptimeMin (a later manual logon, an RDP logon after a sign-out) it
 # logs and exits, unless -Force. Locking the screen is a separate task
@@ -44,7 +52,14 @@ param(
     [int]$MaxUptimeMin = 30,
     [int]$ServiceWaitS = 300,
     [int]$TheSkyWaitS = 180,
-    [int]$MountWaitS = 120
+    [int]$MountWaitS = 120,
+    # The scope Claude session (Remote Control) started before step 1
+    [switch]$NoClaude,
+    [string]$ClaudeSessionName = "scope pc - image the sky",
+    # Empty = -Repo
+    [string]$ClaudeDir = "",
+    # Empty = claude on PATH, else %USERPROFILE%\.local\bin\claude.exe
+    [string]$ClaudeExe = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,6 +131,46 @@ if ($upMin -gt $MaxUptimeMin -and -not $Force) {
     exit 2
 }
 $failed = $false
+
+# ---------------------------------------------------------------- 0b. scope Claude session
+# Not a failure when it cannot start: the observatory steps below do not
+# need it. Started first so it is there to help when a later step fails.
+if ($NoClaude) {
+    Write-Log "Claude session: skipped (-NoClaude)."
+} else {
+    if (-not $ClaudeDir) { $ClaudeDir = $Repo }
+    if (-not $ClaudeExe) {
+        $cmd = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { $ClaudeExe = $cmd.Source }
+        else { $ClaudeExe = Join-Path $env:USERPROFILE ".local\bin\claude.exe" }
+    }
+    $running = @(Get-Process -Name claude -ErrorAction SilentlyContinue)
+    if ($running.Count -gt 0) {
+        Write-Log ("Claude session: claude already running (pid {0}), not starting another." -f (($running | ForEach-Object { $_.Id }) -join ","))
+    } elseif (-not (Test-Path $ClaudeExe)) {
+        Write-Log "Claude session: claude not found at $ClaudeExe (pass -ClaudeExe)."
+    } elseif (-not (Test-Path $ClaudeDir)) {
+        Write-Log "Claude session: folder $ClaudeDir not found (pass -ClaudeDir)."
+    } else {
+        # Claude keeps a folder's conversations under ~\.claude\projects\<path
+        # with : \ / . as ->; --continue only when one exists there.
+        $projKey = ($ClaudeDir.TrimEnd('\') -replace '[:\\/.]', '-')
+        $projDir = Join-Path $env:USERPROFILE (".claude\projects\" + $projKey)
+        $hasConv = @(Get-ChildItem -Path $projDir -Filter *.jsonl -ErrorAction SilentlyContinue).Count -gt 0
+        $mode = if ($hasConv) { "--continue " } else { "" }
+        $name = $ClaudeSessionName.Replace("'", "''")
+        $exe = $ClaudeExe.Replace("'", "''")
+        $dir = $ClaudeDir.Replace("'", "''")
+        $inner = "Set-Location -LiteralPath '$dir'; & '$exe' $mode--remote-control '$name'"
+        $psExe0 = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        if ($DryRun) {
+            Write-Log "would open a window: $inner"
+        } else {
+            Start-Process -FilePath $psExe0 -ArgumentList @("-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $inner) -WorkingDirectory $ClaudeDir | Out-Null
+            Write-Log "Claude session: started '$ClaudeSessionName' in $ClaudeDir ($(if ($hasConv) { 'continuing its last conversation' } else { 'new conversation' }))"
+        }
+    }
+}
 
 # ---------------------------------------------------------------- 1. PhotonScript service
 $deadline = (Get-Date).AddSeconds($ServiceWaitS)
