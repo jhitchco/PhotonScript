@@ -752,6 +752,18 @@ class Armer:
         mode = ("guided (PHD2)" if self._use_guiding()
                 else "unguided (TPoint + ProTrack)")
         if not recipe:
+            # 2026-11-20: a recipe queued for this night (POST /api/arm/queue)
+            # rides on whichever arm comes first, the noon auto-arm included
+            try:
+                from photonscript.scheduler import recipe_queue
+                recipe = recipe_queue.take(self.config, self.plan.get("night_of"))
+                if recipe:
+                    logger.info("Arm takes the queued recipe for %s: %s",
+                                self.plan.get("night_of"), recipe["label"])
+            except Exception as e:  # noqa: BLE001 - never fail an arm over it
+                logger.warning("queued recipe not attached: %s", e)
+                recipe = None
+        if not recipe:
             # 2026-10-28: the guided trial night carries the guider
             # commissioning recipe (guider_commission_on_trial_night)
             try:
@@ -2377,6 +2389,11 @@ class Armer:
         self.plan["moon_fill_note"] = plan_info.get("moon_fill_note")
         if plan_info.get("moon_fill_note"):
             logger.info("Plan: %s", plan_info["moon_fill_note"])
+        # 2026-11-21 gap fill: which goal fills which RC16 gap
+        self.plan["gap_fill"] = list(plan_info.get("gap_fill") or [])
+        self.plan["gap_fill_note"] = plan_info.get("gap_fill_note")
+        if plan_info.get("gap_fill_note"):
+            logger.info("Plan: %s", plan_info["gap_fill_note"])
         # 2026-10-26: "imaging now" and the dashboard read the targets this
         # dispatch loaded, not the arm's list (2026-10-25: "0 target(s)
         # ... on ?" while the RC16 imaged Heart Nebula)
@@ -2419,8 +2436,10 @@ class Armer:
                                        now, guided=self._use_guiding())
         if self._plan_view(targets, now, source="replan"):
             self.plan["rc16_nb_unguided"] = list(info.get("rc16_nb_unguided") or [])
-            for k in ("rc16_nb_note", "moon_fill", "moon_fill_note"):
+            for k in ("rc16_nb_note", "moon_fill", "moon_fill_note",
+                      "gap_fill_note"):
                 self.plan[k] = info.get(k)
+            self.plan["gap_fill"] = list(info.get("gap_fill") or [])
             self._piggy_lengths(targets, projects)
         self.plan["goals_fp"] = fp
 
