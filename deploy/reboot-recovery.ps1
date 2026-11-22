@@ -14,7 +14,8 @@
 #      IsConnected; this script never connects, parks or slews the mount).
 #      TheSky's own setting connects the mount at launch (see
 #      docs/MAINTENANCE.md "Recovery after a reboot"); if it does not, the
-#      log says so and step 3 refuses with one page.
+#      log says so and step 3 still launches the apps but connects nothing
+#      (PS-243): the armer's pre-config connects the mount at night.
 #   3. NINA #1, NINA #2 and PHD2: observatory-apps.ps1 -Start (PS-170):
 #      only what does not answer is launched, on the right profiles, then
 #      equipment connect + preflight through the service.
@@ -221,7 +222,7 @@ if (-not $DryRun -and $mount -ne "connected") {
 }
 Write-Log "TheSky :$TheSkyPort mount: $mount"
 if ($mount -ne "connected" -and -not $DryRun) {
-    Write-Log "TheSky mount is not connected: connect it in TheSky (Telescope > Connect), then run observatory-apps.ps1 -Start."
+    Write-Log "TheSky mount is not connected: the apps launch without connecting anything (PS-243); the armer's pre-config connects the mount, or connect it in TheSky (Telescope > Connect)."
 }
 
 # ---------------------------------------------------------------- 3. NINA x2 + PHD2
