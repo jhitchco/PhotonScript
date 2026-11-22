@@ -225,7 +225,8 @@ def test_hold_exposure_rules(tmp_path):
 
 
 def test_planner_plans_the_target_for_either_rig(tmp_path):
-    cfg = _cfg(tmp_path, moon_aware_planning=False)   # no moon in the way
+    # no moon in the way; no PS-270 drift test in the open dawn gap
+    cfg = _cfg(tmp_path, moon_aware_planning=False, plan_gap_drift=False)
     store = ProjectStore(cfg)
     p = _piggy_only(store)
     # Piggy-only: still off the RC16 sequence (unchanged)

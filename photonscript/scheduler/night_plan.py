@@ -277,6 +277,18 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     for t in targets:
         # PS-112: HDR short subs count too (a plan can owe only shorts)
         total_s = sum(owed_seconds(e) for e in t.exposures) * 1.15
+        if getattr(t, "tracking_test", False) and _window(t, dawn):
+            # PS-270: the planner's gap drift test (test data, no goal)
+            w0, w1 = _window(t, dawn)
+            events.append({
+                "time": _fmt(w0), "event": f"Drift test: {t.name}",
+                "detail": "unguided "
+                + "/".join(t.tracking_test_filters or ["L"]) + " ladder "
+                + "/".join(f"{e:g}" for e in t.tracking_test_exposures)
+                + f" s x{t.tracking_test_repeats} in an RC16 gap no goal "
+                f"could use (~{(w1 - w0).total_seconds() / 3600:.1f}h window)"})
+            cursor = w1
+            continue
         if total_s <= 0:
             continue
         win = _window(t, dawn)

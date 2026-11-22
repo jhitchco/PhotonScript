@@ -482,6 +482,10 @@ class NinaSequenceTarget(BaseModel):
     tracking_test_filters: list[str] = Field(default_factory=list)
     tracking_test_exposures: list[float] = Field(default_factory=list)
     tracking_test_repeats: int = 2
+    # PS-270: a planner gap drift test (target_planner.gap_drift) runs inside
+    # tonight's night loop, so the standalone "parks and holds" sentence in
+    # its annotation is replaced by this one ("" = the standalone sentence).
+    tracking_test_note: str = ""
     # PS-148: a through-focus optics test target (astigmatism / collimation
     # check): AF on L, then short subs at best focus and at each focuser
     # offset in every filter, back to best focus at the end. See

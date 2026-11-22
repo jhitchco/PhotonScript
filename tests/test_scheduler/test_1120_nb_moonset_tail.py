@@ -32,6 +32,9 @@ GOALS = ["Andromeda Galaxy", "Heart Nebula", "NGC 604"]   # all RC16 LRGB only
 
 
 def _cfg(tmp_path, **kw):
+    # the goals' moon rules only; the PS-270 drift test in the moonlit
+    # start is tested in test_1121_gap_fill
+    kw.setdefault("plan_gap_drift", False)
     return PhotonScriptConfig(_env_file=None, data_dir=tmp_path / "data",
                               image_watch_dir=str(tmp_path / "fits"),
                               nina_logs_dir=str(tmp_path / "logs"), **kw)

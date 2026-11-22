@@ -1393,6 +1393,42 @@ both rigs idle (worked around live by patching the Heart to Ha:100).
   `moon_fill` and a per-target `carrier`, so the reports know the carriers
   after the armer moved on.
 
+### Gap fill and the gap drift test (2026-11-21, PS-270)
+
+After the target windows, `target_planner.gap_fill` hands every RC16 gap
+of 10 min or more to the best active goal up then (same rules as the
+priority walk; `plan_gap_fill`). A gap no goal can use stays open (row
+`target` None with the reason). PS-270 (`target_planner.gap_drift`,
+`plan_gap_drift`, default on): an open gap of `plan_gap_drift_min_s`
+(1200) or more, after the moon fill, gets a short unguided drift test on
+the RC16 instead of an idle mount.
+
+- Target "Tracking test Dawn (<field>)" for the gap before dawn,
+  "Tracking test Gap HHMMZ (<field>)" between targets. It is a PS-84
+  tracking-test container (StopGuiding, AF on L, center, the ladder), so
+  its subs are test data: never filed into a goal, out of medians and the
+  night score, grouped by `/api/tracking-test/report`. Its label differs
+  from any dusk recipe label, so the PS-127 gate never counts it.
+- Ladder: L, `plan_gap_drift_exposures` (30,60,120,300 s), up to 3 each,
+  at least 1, the longest length dropped first when 1 each does not fit;
+  the fit uses the dusk test's estimate (download per sub, one AF, one
+  center, the slew) plus 60 s.
+- Field: `tracking_test.place_fields` on the side of the meridian the
+  mount is already on (the previous target's hour angle; west at the start
+  of the night), never crossing it during the ladder, 35 deg up or more,
+  Dec closest to the site latitude (high), 30 deg or more from the moon
+  when it is up; none = a plain star field there.
+- The target before it hands off at its window end; the test hands off at
+  its own (TimeCondition on the container and the ladder) unless it is the
+  night's last target, then the scope parks until dawn.
+- Guided nights get none (the guiding watchdog would restart PHD2 inside
+  the ladder); the gap row says so in `drift_test`. `apply_guiding` never
+  marks a tracking test guided (dispatch gate).
+- Reporting: the `gap_fill` row becomes `kind: "drift_test"` with window,
+  field, side, exposures and `est_minutes`; `gap_fill_note` reads e.g.
+  "Gap fill: Soul Nebula 09:36-11:46Z; 11:46-12:26Z drift test (NGC 2419)";
+  the night plan timeline shows a "Drift test:" event.
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET

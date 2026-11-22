@@ -682,7 +682,8 @@ def gap_fill(sequence_targets, visible_projects, consider, *, start: datetime,
         _put_windows([t], {"windows": {t.name: (w0, w1)}, "handoff": {},
                            "fill": None}, ha_first_by_name)
         fills.append(t)
-        row.update(target=t.name, project_id=getattr(proj, "id", None),
+        row.update(target=t.name, kind="goal",
+                   project_id=getattr(proj, "id", None),
                    priority=proj.priority, window_start_utc=_utc_iso(w0),
                    window_end_utc=_utc_iso(w1),
                    hours=round((w1 - w0).total_seconds() / 3600, 2),
@@ -697,13 +698,7 @@ def gap_fill(sequence_targets, visible_projects, consider, *, start: datetime,
                 queue.append((a, b))
         queue.sort()
     info["gap_fill"] = rows
-    filled = [r for r in rows if r.get("target")]
-    open_ = [r for r in rows if not r.get("target")]
-    info["gap_fill_note"] = "Gap fill: " + "; ".join(
-        [f"{r['target']} {r['window_start_utc'][11:16]}-"
-         f"{r['window_end_utc'][11:16]}Z" for r in filled]
-        + [f"{r['gap_start_utc'][11:16]}-{r['gap_end_utc'][11:16]}Z open"
-           for r in open_])
+    info["gap_fill_note"] = gap_fill_note(rows)
     if not fills:
         return sequence_targets
     out = sorted(targets + fills, key=lambda t: t.window_start_utc)
@@ -713,6 +708,239 @@ def gap_fill(sequence_targets, visible_projects, consider, *, start: datetime,
             t.handoff_utc = t.window_end_utc
         else:
             t.handoff_utc = None   # the last one keeps the mount to the loop end
+    return out
+
+
+def gap_fill_note(rows: list[dict]) -> str | None:
+    """info["gap_fill_note"]: the goals that fill a gap, then the drift
+    tests (PS-270), then the gaps left open."""
+    if not rows:
+        return None
+    filled = [r for r in rows
+              if r.get("target") and r.get("kind") != "drift_test"]
+    drift = [r for r in rows if r.get("kind") == "drift_test"]
+    open_ = [r for r in rows if not r.get("target")]
+    return "Gap fill: " + "; ".join(
+        [f"{r['target']} {r['window_start_utc'][11:16]}-"
+         f"{r['window_end_utc'][11:16]}Z" for r in filled]
+        + [f"{r['window_start_utc'][11:16]}-{r['window_end_utc'][11:16]}Z "
+           f"drift test ({r.get('field') or 'star field'})" for r in drift]
+        + [f"{r['gap_start_utc'][11:16]}-{r['gap_end_utc'][11:16]}Z open"
+           for r in open_])
+
+
+# --- PS-270 gap drift test -----------------------------------------------------
+#
+# 2026-11-21: after the gap fill, 11:46-12:26Z stayed open (Soul Nebula set,
+# no other goal passed tonight's rules) and the RC16 idled to dawn. An open
+# gap of plan_gap_drift_min_s or more now runs a short unguided L drift
+# ladder instead: test data for the tracking report, never a goal's subs.
+
+GAP_DRIFT_LABEL = "Tracking test Dawn"     # the tail gap before dawn
+GAP_DRIFT_MID_LABEL = "Tracking test Gap"  # a gap between two targets
+GAP_DRIFT_FILTER = "L"
+GAP_DRIFT_MAX_REPEATS = 3
+GAP_DRIFT_MARGIN_S = 60.0    # slack on top of the ladder's own overheads
+GAP_DRIFT_DEFAULT_EXPOSURES = (30.0, 60.0, 120.0, 300.0)
+GAP_DRIFT_NOTE = ("Planner gap drift test (PS-270): no goal was up and "
+                  "allowed in this RC16 gap, so a short unguided L ladder "
+                  "runs instead. Its subs are test data (never filed into a "
+                  "goal) for the tracking report. Tonight's plan continues "
+                  "after it; at the end of the night the scope parks until "
+                  "dawn.")
+
+
+def gap_drift_exposures(config) -> list[float]:
+    """plan_gap_drift_exposures ("30,60,120,300", or a list) as ascending,
+    de-duplicated seconds; nothing usable gives the default ladder."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _tracking_test_exposures)
+    raw = getattr(config, "plan_gap_drift_exposures", None)
+    if raw is None:
+        raw = GAP_DRIFT_DEFAULT_EXPOSURES
+    vals = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out = []
+    for v in vals:
+        try:
+            out.append(float(str(v).strip()))
+        except (TypeError, ValueError):
+            continue
+    out = [x for x in out if 0 < x <= 3600]
+    return _tracking_test_exposures(out or list(GAP_DRIFT_DEFAULT_EXPOSURES))
+
+
+def fit_drift_ladder(exposures, window_s: float):
+    """(lengths, repeats, est_s) for the longest drift ladder that fits
+    window_s: one filter, up to GAP_DRIFT_MAX_REPEATS subs per length, at
+    least 1; when even 1 each does not fit, the longest length is dropped
+    and it tries again. est_s is the dusk tracking test's own estimate
+    (nina_sequence_json.tracking_test_duration_s: the subs, download per
+    sub, one AF, one center, the slew) and must fit with GAP_DRIFT_MARGIN_S
+    to spare. None when not even the shortest length fits once."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _tracking_test_exposures, tracking_test_duration_s)
+    exps = _tracking_test_exposures(list(exposures)) if exposures else []
+    while exps:
+        for rep in range(GAP_DRIFT_MAX_REPEATS, 0, -1):
+            est = tracking_test_duration_s(1, exps, rep)
+            if est + GAP_DRIFT_MARGIN_S <= window_s:
+                return exps, rep, est
+        exps = exps[:-1]
+    return None
+
+
+def _drift_side(targets, w0: datetime, lon: float) -> str:
+    """The sky side the mount is on when the gap opens: the hour angle at
+    w0 of the target whose window ends last at or before it ("west" past
+    the meridian, "east" before it); no such target = "west" (no flip)."""
+    from photonscript.scheduler.tracking_test import hour_angle
+    prev = [t for t in targets if t.window_end_utc is not None
+            and t.window_end_utc <= w0 + timedelta(minutes=1)]
+    if not prev:
+        return "west"
+    p = max(prev, key=lambda t: t.window_end_utc)
+    ha = hour_angle(float(p.ra_hours), w0, lon)
+    return "west" if ha >= 0 else "east"
+
+
+def _moon_avoid(config, when: datetime):
+    """(ra_hours, dec, min_sep_deg) of the moon when it is up at `when`,
+    else None (also when its position is unavailable)."""
+    try:
+        from photonscript.scheduler.moon_fill import moon_radec
+        from photonscript.scheduler.tracking_test import altitude
+        m = moon_radec(config, when)
+        if not m:
+            return None
+        ra_h, dec = m[0] / 15.0, m[1]
+        lat = float(getattr(config, "observatory_lat", 31.9))
+        lon = float(getattr(config, "observatory_lon", -109.0))
+        if altitude(ra_h, dec, when, lat, lon) <= 0:
+            return None
+        sep = float(getattr(config, "plan_moon_fill_min_sep_deg", 30.0) or 0)
+        return (ra_h, dec, sep) if sep > 0 else None
+    except Exception as e:  # noqa: BLE001 - never fail a plan over the moon
+        logger.warning("gap drift: moon position unavailable: %s", e)
+        return None
+
+
+def gap_drift(sequence_targets, info: dict, config, *, end: datetime,
+              guided: Optional[bool], projects=()) -> list:
+    """PS-270: a drift test in every RC16 gap the gap fill left open.
+
+    For each open info["gap_fill"] row (what is still uncovered of it after
+    the moon fill, the longest part of at least plan_gap_drift_min_s), an
+    unguided L tracking-test target on the RC16: lengths from
+    plan_gap_drift_exposures, up to 3 each, fitted to the gap with the dusk
+    tracking test's overhead estimate (fit_drift_ladder). The field comes
+    from tracking_test.place_fields: a catalog / project object on the side
+    of the meridian the mount is already on (no flip inside the gap), never
+    crossing it during the ladder, at least 35 deg up throughout, closest
+    to the observatory latitude in Dec (highest altitude) and at least
+    plan_moon_fill_min_sep_deg from the moon when it is up; none = a plain
+    star field there. Named "Tracking test Dawn (<field>)" for the gap
+    before dawn ("Tracking test Gap HHMMZ (<field>)" between two targets):
+    tracking_test.is_tracking_test and target_names.is_test_target are true,
+    so the subs never reach a goal, and the tracking report groups them.
+
+    Guided nights are left alone (the guiding watchdog would restart PHD2
+    inside the unguided ladder); the row says why. The row of a gap that
+    got one becomes target = the test, kind "drift_test", window, field,
+    exposures, est_minutes; info["gap_fill_note"] names it. The target
+    before a drift test now hands off at its window end; the drift test
+    hands off at its own unless it is the night's last target."""
+    from photonscript.scheduler.moon_fill import gaps
+    from photonscript.scheduler.tracking_test import place_fields
+    rows = info.get("gap_fill") or []
+    open_rows = [r for r in rows if not r.get("target")]
+    if not open_rows:
+        return sequence_targets
+    min_s = max(GAP_FILL_MIN_S, float(getattr(config, "plan_gap_drift_min_s",
+                                              1200.0) or 0))
+    if guided:
+        for r in open_rows:
+            if float(r.get("gap_h") or 0) * 3600 >= min_s:
+                r["drift_test"] = ("not on a guided night: the guiding "
+                                   "watchdog would restart PHD2 inside the "
+                                   "unguided ladder")
+        return sequence_targets
+    targets = list(sequence_targets)
+    exposures = gap_drift_exposures(config)
+    lat = float(getattr(config, "observatory_lat", 31.9))
+    lon = float(getattr(config, "observatory_lon", -109.0))
+    added: list = []
+    for row in open_rows:
+        g0 = datetime.fromisoformat(str(row["gap_start_utc"]).rstrip("Z"))
+        g1 = datetime.fromisoformat(str(row["gap_end_utc"]).rstrip("Z"))
+        allt = targets + added
+        spans = [(t.window_start_utc, t.window_end_utc) for t in allt]
+        spans += [(t.fill_from_utc, t.fill_end_utc or end) for t in allt
+                  if getattr(t, "fill_from_utc", None) is not None]
+        # only what overlaps this gap (moon_fill.gaps clips a span to the
+        # range but would read one wholly outside it as an uncovered stretch)
+        spans = [(a, b) for a, b in spans
+                 if a is not None and b is not None and a < g1 and b > g0]
+        parts = gaps(spans, g0, g1, min_s)
+        if not parts:
+            if (g1 - g0).total_seconds() < min_s:
+                row["drift_test"] = (f"gap under {min_s / 60:.0f} min: "
+                                     "no drift test")
+            continue
+        w0, w1 = max(parts, key=lambda ab: (ab[1] - ab[0]).total_seconds())
+        fit = fit_drift_ladder(exposures, (w1 - w0).total_seconds())
+        if fit is None:
+            row["drift_test"] = "no drift ladder fits the gap"
+            continue
+        exps, rep, est_s = fit
+        side = _drift_side(allt, w0, lon)
+        dur_h = est_s / 3600
+        want_ha = (dur_h / 2 + 0.75) if side == "west" else -(dur_h / 2 + 1.0)
+        tail = (end - w1).total_seconds() < 60
+        label = (GAP_DRIFT_LABEL if tail
+                 else f"{GAP_DRIFT_MID_LABEL} {w0:%H%M}Z")
+        avoid = _moon_avoid(config, w0 + timedelta(seconds=est_s / 2))
+        field = place_fields(config, [{"label": label, "ha": want_ha,
+                                       "dec": lat}], w0, est_s,
+                             projects, avoid=avoid)[0]
+        t = NinaSequenceTarget(
+            name=field["name"], ra_hours=field["ra_hours"],
+            dec_degrees=field["dec_degrees"], exposures=[],
+            start_guiding=False, dither_every_n=0,
+            camera_temp_c=config.camera_setpoint_c,
+            tracking_test=True, tracking_test_filters=[GAP_DRIFT_FILTER],
+            tracking_test_exposures=list(exps),
+            tracking_test_repeats=rep, tracking_test_note=GAP_DRIFT_NOTE)
+        t.window_start_utc, t.window_end_utc = w0, w1
+        added.append(t)
+        row.pop("reason", None)
+        row.update(
+            target=t.name, kind="drift_test", field=field.get("object"),
+            field_source=field.get("source"), side=side,
+            window_start_utc=_utc_iso(w0), window_end_utc=_utc_iso(w1),
+            hours=round((w1 - w0).total_seconds() / 3600, 2),
+            exposures=[f"{rep}x{e:g}s {GAP_DRIFT_FILTER}" for e in exps],
+            est_minutes=round(est_s / 60),
+            ra_hours=field["ra_hours"], dec_degrees=field["dec_degrees"],
+            alt_start_deg=field["alt_start_deg"],
+            alt_end_deg=field["alt_end_deg"],
+            ha_start_h=field["ha_start_h"], ha_end_h=field["ha_end_h"])
+        logger.info("Gap drift: RC16 gap %s-%sZ -> %s (%s, %s; ~%d min)",
+                    f"{w0:%H:%M}", f"{w1:%H:%M}", t.name, side,
+                    "/".join(f"{e:g}" for e in exps) + f" s L x{rep}",
+                    round(est_s / 60))
+    if not added:
+        return sequence_targets
+    ids = {id(t) for t in added}
+    out = sorted(targets + added, key=lambda t: t.window_start_utc or end)
+    has_fill = any(getattr(t, "fill_from_utc", None) is not None for t in out)
+    for i, t in enumerate(out):
+        nxt = out[i + 1] if i + 1 < len(out) else None
+        if id(t) in ids:
+            t.handoff_utc = (t.window_end_utc if nxt is not None or has_fill
+                             else None)
+        elif nxt is not None and id(nxt) in ids and t.handoff_utc is None:
+            t.handoff_utc = t.window_end_utc
+    info["gap_fill_note"] = gap_fill_note(rows)
     return out
 
 
@@ -1302,6 +1530,13 @@ def plan_night_sequence(
             dark_end=dark_end, moon_tag=moon_tag, moon_window=_gen_moon,
             guided=guided, skipped=skipped, info=info)
 
+    # PS-270: what the gap fill (and the moon fill) left open gets a short
+    # unguided drift test instead of an idle RC16
+    if info["gap_fill"] and bool(getattr(config, "plan_gap_drift", True)):
+        sequence_targets = gap_drift(
+            sequence_targets, info, config, end=dark_end, guided=guided,
+            projects=[vp["project"] for vp in visible_projects])
+
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",
         len(sequence_targets),
@@ -1322,7 +1557,9 @@ def apply_guiding(targets, guided: bool) -> list:
     it is set. Unguided also clears PS-85 per-block flags (a per-block
     decision only exists inside a guided target). Returns the targets."""
     for t in targets or []:
-        t.start_guiding = bool(guided)
+        # PS-270: a tracking test (the planner's gap drift test) is unguided
+        # by design and never counts as a guided target (dispatch gate)
+        t.start_guiding = bool(guided) and not getattr(t, "tracking_test", False)
         if not guided and getattr(t, "unguided_filters", None):
             t.unguided_filters = []
     return targets
