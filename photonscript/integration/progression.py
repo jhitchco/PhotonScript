@@ -689,7 +689,9 @@ def _card(store: Store, e: dict, max_h: float, subject: str) -> str:
     bar = (float(hrs) / max_h * 100) if isinstance(hrs, (int, float)) and max_h else 0
     nights = d.get("nights") or []
     nights_txt = ", ".join(esc(n[5:]) for n in nights) if isinstance(nights, list) else esc(nights)
-    lin = LINEAGES.get(e.get("lineage"), "wide")
+    # meta "lineages" ({lineage: filter key}) adds lineages of its own
+    # (PS-265 Seestar sheets: on-board stacks, PixInsight, AARO cross-rig)
+    lin = {**LINEAGES, **(store.meta.get("lineages") or {})}.get(e.get("lineage"), "wide")
     core = ""
     if e.get("core_file") and (store.dir / e["core_file"]).is_file():
         core = (f'<button class="inset" type="button" data-full="1" '

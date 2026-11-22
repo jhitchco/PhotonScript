@@ -203,7 +203,8 @@ def newest_runs(staging_root: Path, scratch_root: Path | None = None) -> list[tu
     """(ledger path, Ledger) of the newest integration ledger per goal + rig
     in the staging (and scratch) root."""
     from photonscript.integration import ledger as writer
-    leds = [(f, x) for f, x in writer.local_ledgers(staging_root, scratch_root) if x.kind == "integration"]
+    leds = [(f, x) for f, x in writer.local_ledgers(staging_root, scratch_root)
+            if x.kind == "integration" and x.rig not in writer.L.LOCAL_RIGS]   # PS-265: seestar stays manual
     leds.sort(key=lambda fx: (fx[1].created_at, fx[1].version), reverse=True)
     out: list[tuple[Path, object]] = []
     for f, x in leds:

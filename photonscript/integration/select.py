@@ -256,3 +256,57 @@ def select_lights(lib: Path, target: str, rig: str, *, since: str = "", until: s
                     sel.overlap_count += n
     sel.lights.sort(key=lambda f: (f.date_obs, f.name))
     return sel
+
+
+# PS-265: a plain folder of subs (the Seestar S50 Pro writes
+# MyWorks/<target>_sub/Light_<target>_10.0s_<filter>_<time>.fit, with a .jpg
+# and a _thn.jpg beside every sub). Only the pattern is read; nothing else in
+# the folder is touched.
+FOLDER_PATTERN = "Light_*.fit"
+
+
+def select_folders(dirs: list[Path], target: str, *, pattern: str = FOLDER_PATTERN,
+                   since: str = "", until: str = "", filters: list[str] | None = None,
+                   read=read_frame, tz: str = "America/Denver") -> Selection:
+    """Lights from plain folders (not the Library layout): every file that
+    matches `pattern` in each folder (not recursive), nights in [since,
+    until], `filters` limits the FILTER values (LP, IRCUT). A file name seen
+    in an earlier folder counts once. Read-only. rig is 'folder'."""
+    sel = Selection(target=target, rig="folder")
+    want = {f.upper() for f in filters} if filters else None
+    seen: set[str] = set()
+    for d in dirs:
+        d = Path(d)
+        if not d.is_dir():
+            raise FileNotFoundError(f"input folder not found: {d}")
+        sel.folders.append(str(d))
+        for p in sorted(d.glob(pattern)):
+            if not p.is_file() or p.suffix.lower() not in LIGHT_EXT:
+                continue
+            if p.name in seen:
+                sel.skipped.append((str(p), "duplicate file name"))
+                continue
+            try:
+                fr = read(p, kind="LIGHT", tz=tz)
+            except Exception as e:  # noqa: BLE001 - unreadable header
+                sel.skipped.append((str(p), f"unreadable header ({e})"))
+                continue
+            fr.target_dir = d.name
+            if fr.kind != "LIGHT":
+                sel.skipped.append((str(p), f"IMAGETYP {fr.kind}"))
+                continue
+            if want and (fr.filter or "").upper() not in want:
+                continue
+            if since and fr.night and fr.night < since:
+                sel.skipped.append((str(p), f"night {fr.night} before --since {since}"))
+                continue
+            if until and fr.night and fr.night > until:
+                sel.skipped.append((str(p), f"night {fr.night} after --until {until}"))
+                continue
+            if fr.exp <= 0:
+                sel.skipped.append((str(p), "no EXPTIME"))
+                continue
+            seen.add(p.name)
+            sel.lights.append(fr)
+    sel.lights.sort(key=lambda f: (f.date_obs, f.name))
+    return sel

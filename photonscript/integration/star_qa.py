@@ -70,6 +70,12 @@ class Thresholds:
     coherence_votes: int = 5      # "coherent" = extra in >= this many other subs
     coherence_min_subs: int = 6   # aligned subs needed for the vote
     match_tol_px: float = 4.0     # native px (2 superpixels on OSC)
+    # PS-265: False = a sub star QA cannot register is kept (StarAlignment
+    # decides). The Seestar's field rotates about 3 deg an hour (EQ mode on
+    # an imperfectly aligned wedge); the shift vote here only handles 0 /
+    # 180 deg, so 272 of 382 NGC 281 subs failed it on 2026-11-21 although
+    # their stars were fine. The second-star-set test still needs a match.
+    require_registration: bool = True
 
 
 # ------------------------------------------------------------- detection
@@ -390,7 +396,8 @@ def classify(rows: list[dict], thr: Thresholds | None = None,
         if r.get("is_reference"):
             pass
         elif not r.get("aligned") or (r.get("coverage") or 0) < thr.min_coverage:
-            why.append("not_registered(no match to the reference)")
+            if thr.require_registration:
+                why.append("not_registered(no match to the reference)")
         else:
             ef = r.get("extra_frac")
             cf = r.get("coherent_frac")
