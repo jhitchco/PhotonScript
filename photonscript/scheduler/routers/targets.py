@@ -2,7 +2,11 @@
 
 GET /targets                          Targets tab (card per target)
 GET /target?name=                     per-target page
-GET /api/targets                      target cards (counts, goal, top reason)
+GET /api/targets                      target cards (counts, goal, top reason,
+                                      section active|paused|done|test)
+GET /api/targets/tonight[?refresh=1]  per goal: tonight's plan line, campaign
+                                      line, night altitude sparkline
+                                      (scheduler/target_board, 5-min cache)
 GET /api/targets/detail?name=         per-target facts, totals, nights, reasons
 GET /api/targets/readiness?name=      integration readiness (scheduler/readiness)
 GET /api/blend-readiness?target=      two-rig narrowband blend readiness
@@ -78,7 +82,68 @@ def target_page(request: Request):
 
 @router.get("/api/targets")
 def api_targets():
-    return {"targets": sub_index.targets(_cfg(), _projects())}
+    """Cards plus (2026-11-21) each card's section: active | paused | done |
+    test (scheduler/target_board.section_of) and the counts per section."""
+    from photonscript.scheduler import target_board
+    cards = target_board.annotate(sub_index.targets(_cfg(), _projects()))
+    return {"targets": cards, "sections": target_board.section_counts(cards)}
+
+
+_board_cache: dict = {}
+BOARD_TTL_S = 300
+
+
+@router.get("/api/targets/tonight")
+async def api_targets_tonight(refresh: bool = False):
+    """2026-11-21 Targets page: per goal, what tonight's plan and the
+    campaign call for plus the night altitude sparkline
+    (scheduler/target_board.build). Reuses the /api/tonight payload
+    (app.api_tonight_plan, run in a worker thread) and build_campaign (no
+    calibration scan, no notifications); cached BOARD_TTL_S. Read-only."""
+    import asyncio
+    import time
+
+    hit = _board_cache.get("board")
+    if not refresh and hit and time.monotonic() - hit[0] < BOARD_TTL_S:
+        return hit[1]
+    from photonscript.scheduler import target_board
+    from photonscript.scheduler.app import api_tonight_plan, get_store
+    cfg = _cfg()
+    # api_tonight_plan awaits nothing (the planner is sync): its own event
+    # loop in a worker thread keeps the planner off this loop
+    try:
+        tonight = await asyncio.to_thread(asyncio.run, api_tonight_plan())
+    except Exception:  # noqa: BLE001 - campaign windows and dark still show
+        tonight = {}
+    fc = None
+    try:
+        from photonscript.scheduler.forecast import get_forecast
+        fc = await get_forecast(cfg)
+    except Exception:  # noqa: BLE001 - climatology-only campaign
+        pass
+
+    def _build():
+        from photonscript.scheduler.campaign import build_campaign
+        projects = _projects()
+        try:
+            camp = build_campaign(cfg, get_store(), forecast=fc,
+                                  with_calibration=False)
+        except Exception:  # noqa: BLE001 - the tonight line still shows
+            camp = None
+        paused: set = set()
+        try:
+            from photonscript.scheduler import tonight_pause as tp
+            from photonscript.scheduler.app import get_armer
+            paused = tp.paused_ids(cfg, tp.current_night(cfg, get_armer()))
+        except Exception:  # noqa: BLE001
+            pass
+        cards = target_board.annotate(sub_index.targets(cfg, projects))
+        return target_board.build(cfg, projects, tonight, camp, cards=cards,
+                                  paused_ids=paused)
+
+    board = await asyncio.to_thread(_build)
+    _board_cache["board"] = (time.monotonic(), board)
+    return board
 
 
 @router.get("/api/targets/detail")
