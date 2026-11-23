@@ -500,3 +500,30 @@ def test_installer_registers_two_interactive_tasks():
     assert "$stopTrigger.Repetition = $rep.Repetition" in s
     assert "[switch]$DryRun" in s and "[switch]$Uninstall" in s
     assert "Unregister-ScheduledTask" in s
+
+
+def test_start_launches_apps_without_connecting_when_mount_is_down():
+    """PS-243 (2026-11-22, Windows Update reboot): a disconnected mount (or
+    TheSky not running) no longer leaves every app closed. TheSky is opened,
+    the mount is only read, the apps launch, and nothing is connected so a
+    parked mount stays parked. -RequireMount keeps the old refusal."""
+    s = _ps("observatory-apps.ps1")
+    assert "[switch]$RequireMount" in s and '[string]$TheSkyExe = ""' in s
+    gate = s[s.index("$mountDown = $null"):s.index("$restarted = $false")]
+    # TheSky launched only when not running, and not under -RequireMount
+    # never with -Only: the remote `apps --start --only` launches ONE app
+    assert "if ($skyProc.Count -eq 0 -and -not $RequireMount -and -not $Only)" in gate
+    assert gate.index("Start-Process -FilePath $TheSkyExe") < gate.index("$mount = if ($skyProc.Count -gt 0) { Get-TheSkyMount }")
+    assert 'Add-Step ("would launch TheSky: {0}" -f $TheSkyExe)' in gate
+    # the old refusal only with -RequireMount; otherwise remember why and go on
+    i_req = gate.index("if ($RequireMount) {")
+    assert gate.index("TheSky not ready", i_req) < gate.index("exit 1", i_req) < gate.index("$mountDown = $mount")
+    # the mount is never driven from the gate
+    for bad in ("Connect()", "ConnectAndDoNotUnpark", ".Park", "SlewTo", "SetTracking", "Unpark"):
+        assert bad not in gate
+    # mount down: no PHD2 equipment connect, no service connect + preflight
+    phd = s[s.index('"get_profile"'):s.index('"PHD2 equipment connected"')]
+    assert "if ($mountDown) {" in phd and "elseif (-not $NoPhd2Connect)" in phd
+    conn = s[s.index('Add-Step "connect + preflight skipped (-NoConnect)"'):s.index('"/api/equipment/connect"')]
+    assert "} elseif ($mountDown) {" in conn
+    assert "the armer's pre-config connects it" in s

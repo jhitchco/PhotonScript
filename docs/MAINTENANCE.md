@@ -62,6 +62,14 @@ then equipment connect + preflight) -> `PhotonScript Lock After Logon`
 only within 30 min of a boot (`-Force` by hand). Log:
 `<data_dir>\logs\reboot-recovery.log`.
 
+First thing in the recovery (2026-11-22): the scope Claude session. When no
+`claude` process runs, it opens a PowerShell window in the repo folder
+running `claude --continue --remote-control "scope pc - image the sky"` (a
+new conversation when that folder has none), so the desktop session can reach
+it by name after a reboot. Claude must already be signed in on the scope PC
+(`claude auth login` once, by Jeremy). `-NoClaude` skips it; `-ClaudeDir`,
+`-ClaudeExe` and `-ClaudeSessionName` override the defaults.
+
 One-time setup on the scope PC (Jeremy; Claude never handles the password):
 
 1. Auto-logon: download Sysinternals Autologon from Microsoft
@@ -71,10 +79,14 @@ One-time setup on the scope PC (Jeremy; Claude never handles the password):
    `DefaultPassword` in the registry. Undo: run it again and Disable. If
    `photonscript autostart-check` shows `autologon.count`, remove
    `AutoLogonCount` (auto-logon would stop after that many boots).
-2. TheSky: make it connect the mount when it starts (TheSky Telescope Setup:
-   the option to connect the telescope at startup), so step 2 of the recovery
-   finds the mount connected. Without it the script logs "mount is not
-   connected" and `observatory-apps.ps1 -Start` refuses with one page.
+2. TheSky: optional since PS-243 (2026-11-22). With the mount not
+   connected, `observatory-apps.ps1 -Start` (the recovery's step 3 and the
+   daily Apps Start) opens TheSky if it is not running, launches NINA #1,
+   NINA #2 and PHD2, and connects nothing (no PHD2 equipment connect, no
+   connect + preflight), so a parked mount stays parked; the armer's
+   pre-config connects the mount at night. TheSky's connect-at-startup
+   option is not needed, and with UnparkOnConnect=1 it would unpark the
+   mount by day. `-RequireMount` restores the old refusal (one page).
    Check the TheSky64.exe path: the script finds the first one under
    `Program Files\Software Bisque`; pass `-TheSkyExe` (edit the task's
    arguments) if that is wrong.

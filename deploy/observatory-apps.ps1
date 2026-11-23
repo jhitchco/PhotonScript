@@ -10,7 +10,7 @@
 # deploy\install-app-lifecycle-tasks.ps1. By hand, normal PowerShell:
 #   powershell -ExecutionPolicy Bypass -File C:\astro\PhotonScript\deploy\observatory-apps.ps1 -Status
 #   ... -Stop  [-DryRun] [-Force] [-IncludeTheSky]
-#   ... -Start [-DryRun] [-SkipTheSkyCheck] [-NoPhd2Connect] [-Only nina1|nina2|phd2] [-NoConnect]
+#   ... -Start [-DryRun] [-SkipTheSkyCheck] [-RequireMount] [-NoPhd2Connect] [-Only nina1|nina2|phd2] [-NoConnect]
 #
 # The PhotonScript service decides, this script acts:
 #   GET  /api/apps/status    enabled flag, stop guards, launch settings
@@ -26,8 +26,17 @@
 #   armer, sequence or sun guards. PHD2: stop_capture, set_connected false,
 #   shutdown (JSON-RPC). NINA: close the main window. Each app is killed
 #   only after -CloseTimeoutS. TheSky is never touched unless -IncludeTheSky.
-# -Start: idempotent, only what does not answer is launched. TheSky must be
-#   running with its mount connected (else page and stop). Then NINA #1 and
+# -Start: idempotent, only what does not answer is launched. TheSky first
+#   (PS-243, 2026-11-22): launched when no TheSky64 runs, then its mount is
+#   read (IsConnected only; this script never connects, parks or slews it).
+#   Mount connected: the full start below. Mount NOT connected (the park
+#   left it disconnected, or TheSky just opened after a reboot): the apps
+#   are launched anyway but nothing is connected (no PHD2 equipment connect,
+#   no service connect + preflight), so a parked mount stays parked; the
+#   armer's pre-config connects it at night. Before this, a reboot or a
+#   disconnecting park left every app closed until someone came by
+#   (2026-11-04, 11-05, 11-13, 11-22). -RequireMount keeps the old refusal
+#   (page and stop). Then NINA #1 and
 #   NINA #2 with --profileid (profile name resolved from
 #   %LOCALAPPDATA%\NINA\Profiles; never launched without one), then PHD2
 #   (profile app_phd2_profile_id selected and equipment connected over its
@@ -64,6 +73,10 @@ param(
     [switch]$Force,
     [switch]$IncludeTheSky,
     [switch]$SkipTheSkyCheck,
+    [switch]$RequireMount,
+    # Empty = the first TheSky64.exe under Program Files\Software Bisque
+    [string]$TheSkyExe = "",
+    [int]$TheSkyWaitS = 180,
     [switch]$NoPhd2Connect,
     [ValidateSet("", "nina1", "nina2", "phd2")]
     [string]$Only = "",
@@ -428,15 +441,42 @@ if ($Start) {
         }
         Add-Step ("-Only {0}: {1} :{2} not running, launching it alone" -f $Only, $onlyLabel, $onlyPort)
     }
-    # TheSky must be up with its mount connected (NINA and PHD2 drive the
-    # Paramount through it). Never started or connected from here.
+    # TheSky (NINA and PHD2 drive the Paramount through it). PS-243: opened
+    # here when not running (a full start only: -Only launches ONE app and
+    # nothing else, the remote `apps --start --only` contract); the mount is
+    # only read (IsConnected), never connected, parked or slewed from here.
+    $mountDown = $null
     if (-not $SkipTheSkyCheck) {
         $skyProc = @(Get-Process -Name TheSky64 -ErrorAction SilentlyContinue)
+        if ($skyProc.Count -eq 0 -and -not $RequireMount -and -not $Only) {
+            if (-not $TheSkyExe) {
+                $hit = Get-ChildItem -Path "$env:ProgramFiles\Software Bisque", "${env:ProgramFiles(x86)}\Software Bisque" `
+                    -Filter TheSky64.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($hit) { $TheSkyExe = $hit.FullName }
+            }
+            if (-not $TheSkyExe -or -not (Test-Path -LiteralPath $TheSkyExe)) {
+                Add-Step ("TheSky not running and TheSky64.exe not found ({0}): not launched" -f $TheSkyExe)
+            } elseif ($DryRun) {
+                Add-Step ("would launch TheSky: {0}" -f $TheSkyExe)
+            } else {
+                $tp = Start-Process -FilePath $TheSkyExe -PassThru
+                if (Wait-Port "localhost" $theskyPort $TheSkyWaitS) {
+                    Add-Step ("TheSky launched (pid {0}), :{1} answers" -f $tp.Id, $theskyPort)
+                } else {
+                    Add-Step ("TheSky launched (pid {0}) but :{1} did not answer in {2} s" -f $tp.Id, $theskyPort, $TheSkyWaitS)
+                }
+                $skyProc = @(Get-Process -Name TheSky64 -ErrorAction SilentlyContinue)
+            }
+        }
         $mount = if ($skyProc.Count -gt 0) { Get-TheSkyMount } else { "not running" }
         Add-Step ("TheSky: {0} process(es), mount {1}" -f $skyProc.Count, $mount)
         if ($mount -ne "connected") {
-            Send-Report $false $false ("TheSky not ready (mount {0}): nothing launched; open TheSky, connect the mount, then run -Start" -f $mount) $true
-            exit 1
+            if ($RequireMount) {
+                Send-Report $false $false ("TheSky not ready (mount {0}): nothing launched; open TheSky, connect the mount, then run -Start" -f $mount) $true
+                exit 1
+            }
+            $mountDown = $mount
+            Add-Step ("mount {0}: launching the apps WITHOUT connecting anything (no PHD2 connect, no connect + preflight); the armer's pre-config connects the mount" -f $mount)
         }
     }
     $restarted = $false
@@ -515,7 +555,9 @@ if ($Start) {
                 } else {
                     Add-Step ("PHD2 profile {0} ({1})" -f $prof.id, $prof.name)
                 }
-                if (-not $NoPhd2Connect) {
+                if ($mountDown) {
+                    Add-Step "PHD2 equipment NOT connected (mount not connected in TheSky)"
+                } elseif (-not $NoPhd2Connect) {
                     [void](Invoke-Phd2Rpc "set_connected" @($true) 60000)
                     Add-Step "PHD2 equipment connected"
                 }
@@ -534,6 +576,8 @@ if ($Start) {
     # Connect every rig's equipment and run preflight through the service
     if ($NoConnect) {
         Add-Step "connect + preflight skipped (-NoConnect)"
+    } elseif ($mountDown) {
+        Add-Step ("connect + preflight skipped (mount {0})" -f $mountDown)
     } elseif ($st) {
         if ($launched -gt 0) { Start-Sleep -Seconds 15 }
         $c = Post-Api "/api/equipment/connect" $null 300
@@ -555,6 +599,10 @@ if ($Start) {
     $rs = if ($restarted) { "done" } elseif ($staleWhy) { "blocked" } else { "none" }
     $msg = if ($failed) { "start incomplete" } elseif ($launched) { "launched $launched app(s), connected, preflight go" } else { "all apps already running" }
     if ($restarted -and -not $failed) { $msg = "restarted fresh (closed, then " + $msg + ")" }
+    if ($mountDown) {
+        $msg = $msg -replace ", connected, preflight go", ""
+        $msg = $msg + ("; mount {0} in TheSky: nothing connected, the armer's pre-config connects it" -f $mountDown)
+    }
     $pageStale = $false
     if (-not $fresh) {
         $msg = $msg + "; apps NOT fresh today: " + $staleWhy
