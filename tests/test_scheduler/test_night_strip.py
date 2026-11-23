@@ -258,7 +258,7 @@ def test_rc16_card_gets_the_roof_row():
     block = html[a:b]
     assert "!mnt && sm" not in block
     assert "if (sm)" in block
-    assert "roof open (safe)" in block and "roof closed (unsafe)" in block
+    assert "'open'" in block and "'closed'" in block   # 2026-11-23: status chips
     # the Piggy-only hints stay on the Piggy card
     assert "can do darks/bias" in block and "r.rig === 'rc16'" in block
     assert block.isascii()
