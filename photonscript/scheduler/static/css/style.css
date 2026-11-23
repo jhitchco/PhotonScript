@@ -472,3 +472,23 @@ footer {
 .g-finding { margin-top: .45rem; font-size: .85rem; }
 .g-sumline { padding: .3rem 0; font-size: .88rem; border-bottom: 1px solid var(--border); }
 .g-sumline a, .g-intro a { color: #7dd3fc; text-decoration: none; }
+
+/* --- Folding sections (UI tidy 2026-11-23, static/js/fold.js) ---
+   <details class="fold"><summary><h2>..</h2><span class="fold-dot"></span>
+   <span class="fold-sum"></span></summary>..</details> */
+details.fold > summary { cursor: pointer; list-style: none; display: flex;
+                         align-items: center; gap: .6rem; min-width: 0; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "\25B8"; color: var(--text-secondary);
+                                 font-size: .85rem; transition: transform .15s; flex: none; }
+details.fold[open] > summary::before { transform: rotate(90deg); }
+details.fold > summary > h2, details.fold > summary > h3 { margin: 0; flex: none; }
+details.fold[open] > summary { margin-bottom: .8rem; }
+.fold-dot { width: .62rem; height: .62rem; border-radius: 50%; background: #64748b; flex: none; }
+.fold-dot.ok { background: #4ade80; }
+.fold-dot.info { background: #7dd3fc; }
+.fold-dot.warn { background: #eab308; }
+.fold-dot.fail { background: #f87171; }
+.fold-sum { opacity: .75; font-size: .85rem; white-space: nowrap; overflow: hidden;
+            text-overflow: ellipsis; min-width: 0; flex: 1; }
+details.fold[open] > summary > .fold-sum { opacity: .55; }

@@ -7,6 +7,7 @@
     <title>PhotonScript - System</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
+    <script src="/static/js/fold.js?v={{ version }}"></script>
     <style>
         .sys-nav { margin: 1rem 2rem 0; }
         .sys-nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
@@ -36,6 +37,10 @@
         .cfg-hint { font-size: .75rem; opacity: .55; }
         #cfgStatus { margin-left: 1rem; font-size: .9rem; }
         button[disabled] { opacity: .5; }
+        /* UI tidy 2026-11-23: one column of folded sections, each a heading +
+           status dot + one-line summary; problems (warn / fail) start open. */
+        main.sys-main { grid-template-columns: 1fr; gap: .6rem; }
+        main.sys-main > section.panel { padding: .85rem 1.2rem; }
     </style>
 </head>
 <body>
@@ -43,29 +48,44 @@
     {% set active_page = "system" %}
     {% include "_header.html" %}
 
-    <main>
-        <section class="panel" style="margin-bottom:1.5rem;">
-            <h2>Software Update</h2>
+    <main class="sys-main">
+        <section class="panel">
+            <details class="fold" id="updFold" data-fold="sys-update"><summary><h2>Software Update</h2><span class="fold-dot info"></span><span class="fold-sum">running: {{ version }}</span></summary>
             <div class="bd" id="updInfo" style="margin:.4rem 0;">running: {{ version }}</div>
             <button class="btn btn-secondary" id="updCheck">Check for updates</button>
             <button class="btn btn-primary" id="updGo">Pull latest &amp; restart</button>
             <button class="btn btn-secondary" id="syncTest" title="Checks Library transfer to the desktop via the Syncthing API (settings in the Sync group below)">Test Syncthing</button>
             <span class="bd" id="syncTestResult"></span>
             <div class="bd" id="updStatus" style="margin-top:.4rem;"></div>
+            </details>
         </section>
 
-        <section class="panel" id="syncHygienePanel" style="margin-bottom:1.5rem;">
-            <h2>Desktop Sync Hygiene (PS-43)</h2>
+        <section class="panel" id="syncHygienePanel">
+            <details class="fold" id="syncFold" data-fold="sys-sync"><summary><h2>Desktop Sync Hygiene (PS-43)</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <div class="bd" style="opacity:.75;margin-bottom:.4rem;">What the Syncthing backlog is made of, folder errors, and ignore patterns to review. Observe only: PhotonScript never changes Syncthing.
                 <button class="btn btn-secondary" type="button" onclick="window.loadSyncHygiene &amp;&amp; window.loadSyncHygiene()">Refresh</button></div>
             <div class="sync-hygiene" data-mode="full"></div>
+            <script>
+            fetch('/api/sync').then(function (r) { return r.json(); }).then(function (d) {
+                if (!d.configured) { Fold.status('syncFold', '', 'Syncthing not configured (Sync group in Configuration)'); return; }
+                if (d.error) { Fold.status('syncFold', 'fail', 'Syncthing unreachable: ' + d.error); return; }
+                var b = d.batch || {};
+                var gb = ((d.need_bytes || 0) / 1e9).toFixed(1);
+                var txt = (d.completion_pct >= 100 ? 'desktop up to date' :
+                    d.completion_pct + '% synced, ' + d.need_items + ' file(s) / ' + gb + ' GB pending') +
+                    (b.stalled ? ', STALLED ' + b.stalled_min + ' min' : '');
+                Fold.status('syncFold', b.stalled ? 'warn' : d.completion_pct >= 100 ? 'ok' : 'info', txt);
+            }).catch(function (e) { Fold.status('syncFold', 'fail', 'sync status unavailable: ' + e); });
+            </script>
+            </details>
         </section>
 
-        <section class="panel" id="sysLoadPanel" style="margin-bottom:1.5rem;">
-            <h2>Host Load</h2>
+        <section class="panel" id="sysLoadPanel">
+            <details class="fold" id="loadFold" data-fold="sys-load"><summary><h2>Host Load</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <div class="bd" id="sysLoad">loading…</div>
             <button class="btn btn-secondary" id="sysLoadRefresh" style="margin-top:.5rem;">Refresh</button>
             <div class="cfg-hint" style="margin-top:.4rem;">RAM/CPU/disk on the scope PC and the heavy astro processes — watch this when running the second (piggyback) camera.</div>
+            </details>
         </section>
         <script>
         (function () {
@@ -102,19 +122,36 @@
                         el.style.fontFamily = "ui-monospace, monospace";
                         el.style.fontSize = ".82rem";
                         el.textContent = fmt(d);
+                        Fold.status("loadFold", loadLevel(d), loadLine(d));
                     })
-                    .catch(function (e) { el.textContent = "error: " + e; });
+                    .catch(function (e) { el.textContent = "error: " + e; Fold.status("loadFold", "fail", "error: " + e); });
+            }
+            function loadLevel(d) {
+                if (!d || d.available === false) return "warn";
+                var r = d.ram || {}, bad = (r.percent || 0) >= 90;
+                (d.disks || []).forEach(function (k) { if ((k.percent_used || 0) >= 90) bad = true; });
+                return bad ? "warn" : "ok";
+            }
+            function loadLine(d) {
+                if (!d || d.available === false) return "system stats unavailable";
+                var r = d.ram || {};
+                var parts = ["RAM " + (r.percent ?? "?") + "%", "CPU " + (d.cpu_percent ?? "?") + "%"];
+                (d.disks || []).forEach(function (k) {
+                    parts.push("disk " + k.label + " " + k.free_gb + " GB free (" + k.percent_used + "% used)");
+                });
+                return parts.join(", ");
             }
             document.getElementById("sysLoadRefresh").addEventListener("click", load);
             load();
         })();
         </script>
 
-        <section class="panel" id="appsPanel" style="margin-bottom:1.5rem;">
-            <h2>Observatory apps (PS-170)</h2>
+        <section class="panel" id="appsPanel">
+            <details class="fold" id="appsFold" data-fold="sys-apps"><summary><h2>Observatory apps (PS-170)</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <div class="bd" id="appsBody">loading...</div>
             <button class="btn btn-secondary" id="appsRefresh" style="margin-top:.5rem;">Refresh</button>
             <div class="cfg-hint" style="margin-top:.4rem;">NINA #1 / #2, PHD2 and TheSky, and the daily close / relaunch (deploy\observatory-apps.ps1, settings in the App lifecycle group below). Read only: the scheduled tasks on the scope PC do the closing and launching.</div>
+            </details>
         </section>
         <script>
         (function () {
@@ -150,16 +187,23 @@
                         el.style.fontFamily = "ui-monospace, monospace";
                         el.style.fontSize = ".82rem";
                         el.textContent = fmt(d);
+                        var apps = d.apps || {}, keys = Object.keys(apps);
+                        var up = keys.filter(function (k) { return apps[k].answering; });
+                        var down = (d.needed || []).filter(function (k) { return apps[k] && !apps[k].answering; });
+                        Fold.status("appsFold", down.length ? "warn" : "ok",
+                            up.length + " of " + keys.length + " apps answering" +
+                            (down.length ? ", needed tonight and NOT answering: " + down.map(function (k) { return apps[k].label; }).join(", ") : "") +
+                            "; daily lifecycle " + (d.enabled ? "ON" : "off"));
                     })
-                    .catch(function (e) { el.textContent = "error: " + e; });
+                    .catch(function (e) { el.textContent = "error: " + e; Fold.status("appsFold", "fail", "error: " + e); });
             }
             document.getElementById("appsRefresh").addEventListener("click", load);
             load();
         })();
         </script>
 
-        <section class="panel" id="rigsPanel" style="margin-bottom:1.5rem;">
-            <h2>Rigs (multi-scope)</h2>
+        <section class="panel" id="rigsPanel">
+            <details class="fold" id="rigsFold" data-fold="sys-rigs"><summary><h2>Rigs (multi-scope)</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <div class="bd" id="rigsBody">loading…</div>
             <div style="margin-top:.5rem;">
                 <button class="btn btn-secondary" id="rigsRefresh">Refresh status</button>
@@ -168,6 +212,7 @@
                 <span class="bd" id="rigsStatus"></span>
             </div>
             <div class="cfg-hint" style="margin-top:.4rem;">Connection status per NINA instance. Enable the piggyback rig in the Piggyback config group below, set its API URL, then Refresh.</div>
+            </details>
         </section>
         <script>
         (function () {
@@ -197,8 +242,16 @@
             function load() {
                 show("loading…");
                 fetch("/api/rigs").then(function (r) { return r.json(); })
-                    .then(function (d) { show(render(d)); })
-                    .catch(function (e) { show("error: " + e); });
+                    .then(function (d) {
+                        show(render(d));
+                        var parts = ((d && d.rigs) || []).map(function (r) {
+                            var ks = Object.keys(r.devices || {});
+                            var on = ks.filter(function (k) { return r.devices[k].connected; });
+                            return r.name + " " + on.length + "/" + ks.length + " devices connected";
+                        });
+                        Fold.status("rigsFold", "info", parts.join(", ") || "no rigs");
+                    })
+                    .catch(function (e) { show("error: " + e); Fold.status("rigsFold", "fail", "error: " + e); });
             }
             function post(url, statusMsg, done) {
                 var s = document.getElementById("rigsStatus");
@@ -229,7 +282,7 @@
 
 
         <section class="panel" id="calPanel">
-            <h2>Calibration Health</h2>
+            <details class="fold" id="calFold" data-fold="sys-cal"><summary><h2>Calibration Health</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <div id="calHealth" class="bd">loading…</div>
             <div style="margin-top:.6rem;display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;">
                 <label class="bd" style="white-space:nowrap;">Rig
@@ -271,10 +324,11 @@
                 scheduler automatically.
                 </div>
             </details>
+            </details>
         </section>
 
-        <section class="panel" style="margin-top:1.5rem;" id="logsPanel">
-            <h2>Diagnostic Logs</h2>
+        <section class="panel" id="logsPanel">
+            <details class="fold" id="logsFold" data-fold="sys-logs"><summary><h2>Diagnostic Logs</h2><span class="fold-dot"></span><span class="fold-sum">tail the ASCOM safety trace or the NINA log</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">Tail the newest logs without pulling the whole bundle. The <b>ASCOM trace</b> is the driver-level detail (HTTP calls, exceptions) behind a safety-monitor drop — enable "Trace" in the ASCOM Alpaca driver setup first, then reconnect.</p>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;">
                 <input id="logGrep" placeholder="filter lines (optional, e.g. error|exception|timeout)" style="flex:1;min-width:220px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.35rem .5rem;">
@@ -283,6 +337,7 @@
                 <span class="bd" id="logStatus"></span>
             </div>
             <pre id="logOut" style="margin-top:.6rem;max-height:360px;overflow:auto;background:#0b1220;border:1px solid #223;border-radius:6px;padding:.6rem;font-size:.75rem;white-space:pre-wrap;word-break:break-word;">(no log loaded — pick a source above)</pre>
+            </details>
         </section>
         <script>
         (function () {
@@ -306,27 +361,53 @@
         })();
         </script>
 
-        <section class="panel" style="margin-top:1.5rem;" id="phd2Panel">
-            <h2>PHD2 Guiding</h2>
+        <section class="panel" id="phd2Panel">
+            <details class="fold" id="phd2Fold" data-fold="sys-phd2"><summary><h2>PHD2 Guiding</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">The PHD2 settings audit, pulse self-test, calibration, guide guard and guide-star tuner live on the <a href="/guiding" style="color:#7dd3fc;">Guiding tab</a> (every Apply, Run, Calibrate and Capture button is there). One line each:</p>
             <div id="phd2Summary" class="bd">loading...</div>
+            </details>
         </section>
         <script src="/static/js/phd2_panels.js?v={{ version }}"></script>
         <script src="/static/js/sync_hygiene_panel.js?v={{ version }}"></script>
-        <script>PHD2.systemSummary('phd2Summary');</script>
+        <script>
+        PHD2.systemSummary('phd2Summary');
+        // Fold line: the guiding attention count. While the night runs unguided
+        // (TPoint + ProTrack) PHD2 findings show the dot but do not open it.
+        Promise.all([
+            fetch('/api/guiding/attention').then(function (r) { return r.json(); }).catch(function () { return null; }),
+            fetch('/api/arm').then(function (r) { return r.json(); }).catch(function () { return null; })
+        ]).then(function (r) {
+            var w = r[0], arm = r[1] || {}, c = (w && w.counts) || {};
+            var unguided = String(arm.guiding || '').toLowerCase() === 'unguided';
+            if (!w) { Fold.status('phd2Fold', 'warn', 'guiding attention unavailable', {noOpen: unguided}); return; }
+            Fold.status('phd2Fold', c.fail ? 'fail' : c.warn ? 'warn' : 'ok',
+                (unguided ? 'night runs unguided (PHD2 not in use); ' : '') + w.line, {noOpen: unguided});
+        });
+        </script>
 
-        <section class="panel" style="margin-top:1.5rem;" id="settingsLedgerPanel">
-            <h2>Settings ledger</h2>
+        <section class="panel" id="settingsLedgerPanel">
+            <details class="fold" id="ledgerFold" data-fold="sys-ledger"><summary><h2>Settings ledger</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">What NINA #1 / #2, PHD2, TheSky and PhotonScript are set to, judged against config/settings/desired_settings.toml. Snapshots at arm, pre-config, dispatch, every armer state change and hourly while a night runs; stored only when something changed. Read only: nothing here writes any program. <code>photonscript settings --sub FILE</code> shows what a sub was taken with.</p>
             <div id="settingsLedger" class="bd">loading...</div>
+            </details>
         </section>
         <script src="/static/js/settings_ledger_panel.js?v={{ version }}"></script>
-        <script>SettingsLedger.load('settingsLedger');</script>
+        <script>
+        SettingsLedger.load('settingsLedger');
+        fetch('/api/settings-ledger/status').then(function (r) { return r.json(); }).then(function (d) {
+            if (!d.ok) { Fold.status('ledgerFold', '', d.note || 'no snapshot'); return; }
+            var c = d.counts || {};
+            Fold.status('ledgerFold', c.fail ? 'fail' : c.warn ? 'warn' : 'ok',
+                (c.fail || 0) + ' fail, ' + (c.warn || 0) + ' warn, ' + (c.unknown || 0) + ' unknown, ' + (c.pass || 0) +
+                ' pass; snapshot ' + (d.snapshot_utc || '-') + ' (' + (d.reason || '') + ')');
+        }).catch(function (e) { Fold.status('ledgerFold', 'fail', 'unavailable: ' + e); });
+        </script>
 
-        <section class="panel" style="margin-top:1.5rem;" id="remoteCliPanel">
-            <h2>Remote commands</h2>
+        <section class="panel" id="remoteCliPanel">
+            <details class="fold" id="remoteFold" data-fold="sys-remote"><summary><h2>Remote commands</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">photonscript commands run on this PC from the desktop (<code>photonscript remote -- &lt;command&gt;</code>, POST /api/cli/run). Allowlisted reports and local data maintenance only (config/remote_cli.toml); nothing here moves hardware. Off unless PS_REMOTE_CLI_TOKEN is set in this PC's .env. Read only: newest first from the audit log.</p>
             <div id="remoteCli" class="bd">loading...</div>
+            </details>
         </section>
         <script>
         (function () {
@@ -341,13 +422,17 @@
                     var what = a.event === 'refused' ? 'refused ' + esc(a.status_code) + ': ' + esc(a.detail) : esc(a.status) + ', exit ' + esc(a.exit) + ', ' + esc(a.duration_s) + ' s';
                     return '<tr><td>' + esc(a.t) + '</td><td><code>' + esc((a.args || []).join(' ')) + '</code></td><td>' + esc(a['class']) + '</td><td>' + what + '</td><td>' + esc(a.tailscale_user || a.ip) + '</td></tr>';
                 }).join('');
+                var nref = (d.audit || []).filter(function (a) { return a.event === 'refused'; }).length;
+                Fold.status('remoteFold', d.enabled ? 'ok' : '', (d.enabled ? 'enabled' : 'disabled (no PS_REMOTE_CLI_TOKEN)') +
+                    ', ' + (d.audit || []).length + ' recent entr' + ((d.audit || []).length === 1 ? 'y' : 'ies') +
+                    (nref ? ' (' + nref + ' refused)' : '') + ((d.running || []).length ? ', ' + d.running.length + ' running' : ''));
                 el.innerHTML = '<div style="margin-bottom:.4rem;">' + head + '</div>' + (rows ? '<table class="tbl" style="font-size:.8rem;"><thead><tr><th>UTC</th><th>Command</th><th>Class</th><th>Result</th><th>From</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<div style="opacity:.7;">No remote commands yet.</div>');
-            }).catch(function () { document.getElementById('remoteCli').textContent = 'unavailable'; });
+            }).catch(function () { document.getElementById('remoteCli').textContent = 'unavailable'; Fold.status('remoteFold', 'warn', 'unavailable'); });
         })();
         </script>
 
-        <section class="panel" style="margin-top:1.5rem;">
-            <h2>Preflight Check</h2>
+        <section class="panel">
+            <details class="fold" id="pfFold" data-fold="sys-preflight"><summary><h2>Preflight Check</h2><span class="fold-dot"></span><span class="fold-sum">not run from this page yet (safe any time, nothing moves)</span></summary>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system
             test: config, directories (auto-created), NINA API, camera, mount,
             safety monitor, PHD2, sequence generation + lint, star extraction,
@@ -355,10 +440,11 @@
             <button class="btn btn-primary" id="runPreflight">Run Preflight</button>
             <span id="pfStatus"></span>
             <div id="pfResults" style="margin-top:1rem;"></div>
+            </details>
         </section>
 
-        <section class="panel" style="margin-top:1.5rem;" id="ttPanel">
-            <h2>Tracking Test (unguided, PS-84)</h2>
+        <section class="panel" id="ttPanel">
+            <details class="fold" id="ttFold" data-fold="sys-tt"><summary><h2>Tracking Test (unguided, PS-84)</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">After building the TPoint model and turning on ProTrack: download the sequence, load it by hand in NINA #1 with guiding stopped, run it, then open the report. It stops guiding, focuses on L, centers, and shoots an L and an Ha exposure ladder (60/120/180/300 s, 2 each). Nothing is sent to NINA from here.</p>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;">
                 <a class="btn btn-primary" id="ttDownload" href="/api/tracking-test/sequence" download>Download tracking-test sequence</a>
@@ -370,6 +456,7 @@
                 <a class="bd" id="ttJson" href="/api/tracking-test/report" target="_blank">JSON</a>
             </div>
             <div id="ttOut" style="margin-top:.6rem;"></div>
+            </details>
         </section>
         <script>
         (function () {
@@ -377,7 +464,8 @@
             fetch('/api/tracking-test/target').then(function (r) { return r.json(); }).then(function (f) {
                 document.getElementById('ttField').textContent = 'field now: ' + f.name +
                     ' (alt ' + f.alt_deg + ' deg, HA ' + f.ha_hours + ' h, ~' + f.est_minutes + ' min; ' + f.source + ')';
-            }).catch(function () { document.getElementById('ttField').textContent = 'field: unavailable'; });
+                Fold.status('ttFold', 'info', 'sequence download + report; field now ' + f.name + ' (alt ' + f.alt_deg + ' deg, ~' + f.est_minutes + ' min)');
+            }).catch(function () { document.getElementById('ttField').textContent = 'field: unavailable'; Fold.status('ttFold', '', 'field unavailable'); });
             document.getElementById('ttReportBtn').onclick = async function () {
                 var d = document.getElementById('ttDate').value.trim();
                 var url = '/api/tracking-test/report' + (d ? '?date=' + encodeURIComponent(d) : '');
@@ -402,10 +490,11 @@
         })();
         </script>
 
-        <section class="panel" style="margin-top:1.5rem;" id="driftSubPanel">
-            <h2>Unguided sub length from drift (PS-169)</h2>
+        <section class="panel" id="driftSubPanel">
+            <details class="fold" id="driftFold" data-fold="sys-drift"><summary><h2>Unguided sub length from drift (PS-169)</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">The longest unguided sub per rig that keeps the measured tracking drift (PHD2 guide log, PS-168: tonight's last hour, else last night) under tracking_smear_budget_px at the rig's scale; never above the existing cap, never below tracking_sub_floor_s, rounded down to a dark length the night quota fills. tracking_drift_cap_mode auto lets the PS-156 unguided fallback use it for RC16 subs; observe only shows it.</p>
             <div id="driftSubBody" class="bd">loading...</div>
+            </details>
         </section>
         <script>
         (function () {
@@ -419,15 +508,18 @@
                         esc(x.smear_px) + '</td><td>' + (x.dark_match === false ? 'no (PS-160 adds it once lights use it)' : esc(x.dark_match)) +
                         '</td><td>' + esc(x.why) + '</td></tr>';
                 }).join('');
+                var rc = (rec.rigs || {}).rc16 || {};
+                Fold.status('driftFold', 'info', 'mode ' + (rec.mode || '-') + '; ' +
+                    (dr.total_arcsec_min != null ? 'drift ' + dr.total_arcsec_min + '"/min, RC16 sub ' + (rc.exposure_s != null ? rc.exposure_s + ' s' : '-') : 'no drift measurement'));
                 document.getElementById('driftSubBody').innerHTML =
                     '<p>Mode <b>' + esc(rec.mode) + '</b>; drift ' + esc(dr.total_arcsec_min) + '"/min (RA ' + esc(dr.ra_arcsec_min) + ', Dec ' + esc(dr.dec_arcsec_min) + '; ' + esc(dr.source || 'no measurement') + '). ' + esc(d.line) + '</p>' +
                     '<table class="tbl" style="font-size:.8rem;"><tr><th>rig</th><th>"/px</th><th>budget</th><th>drift max s</th><th>cap s</th><th>sub</th><th>smear px</th><th>dark match</th><th>limited by</th></tr>' + rows + '</table>';
-            }).catch(function (e) { document.getElementById('driftSubBody').textContent = 'unavailable: ' + e; });
+            }).catch(function (e) { document.getElementById('driftSubBody').textContent = 'unavailable: ' + e; Fold.status('driftFold', 'warn', 'unavailable'); });
         })();
         </script>
 
-        <section class="panel" style="margin-top:1.5rem;" id="gatesPanel">
-            <h2>QA gates per rig (PS-114)</h2>
+        <section class="panel" id="gatesPanel">
+            <details class="fold" id="gatesFold" data-fold="sys-gates"><summary><h2>QA gates per rig (PS-114)</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7;margin-bottom:.6rem;">The limit each rig's subs are graded (and scored) against, and the key that sets it (Configuration below, or .env). A Piggy-600 key left blank uses the RC16 value. Baselines: median + k x sigma of each rig's accepted subs, a proposal only; gates never change from here.</p>
             <div id="gatesBody" class="bd">loading...</div>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
@@ -436,6 +528,7 @@
                 <a class="bd" id="blJson" href="/api/qa/baselines" target="_blank">JSON</a>
             </div>
             <div id="blOut" style="margin-top:.6rem;"></div>
+            </details>
         </section>
         <script>
         (function () {
@@ -449,7 +542,8 @@
                     }).join('') + '</tr>';
                 }).join('');
                 document.getElementById('gatesBody').innerHTML = '<table class="tbl" style="font-size:.8rem;">' + head + rows + '</table>';
-            }).catch(function (e) { document.getElementById('gatesBody').textContent = 'error: ' + e; });
+                Fold.status('gatesFold', 'info', (d.rows || []).length + ' gates for ' + rigs.map(function (r) { return r.name; }).join(' and ') + '; baselines on demand');
+            }).catch(function (e) { document.getElementById('gatesBody').textContent = 'error: ' + e; Fold.status('gatesFold', 'warn', 'error: ' + e); });
             document.getElementById('blBtn').onclick = async function () {
                 var n = parseInt(document.getElementById('blNights').value, 10) || 14;
                 var url = '/api/qa/baselines?nights=' + n;
@@ -478,8 +572,8 @@
         })();
         </script>
 
-        <section class="panel" style="margin-top:1.5rem;">
-            <h2>Configuration</h2>
+        <section class="panel">
+            <details class="fold" id="cfgFold" data-fold="sys-config"><summary><h2>Configuration</h2><span class="fold-dot"></span><span class="fold-sum">loading...</span></summary>
             <p style="opacity:.7; margin-bottom:1rem;">Edits are written to
             <code>.env</code> and applied immediately where possible. Values marked
             &#9860; need a restart of PhotonScript to fully take effect. Secrets
@@ -488,6 +582,7 @@
                 <button class="btn btn-primary" type="submit">Save Changes</button>
                 <span id="cfgStatus"></span>
             </form>
+            </details>
         </section>
     </main>
 
@@ -575,13 +670,19 @@
             } catch (e) { rigs = []; }
             if (!rigs.length) rigs = [{id: 'rc16', name: 'RC16'}];
             const blocks = [];
+            const issues = [];
             for (const rg of rigs) {
                 let inner;
                 try {
                     const d = await (await fetch('/api/calibration/health?rig='
                         + encodeURIComponent(rg.id))).json();
                     inner = _healthBlock(d, rg.id);
-                } catch (e) { inner = '<span style="opacity:.6;">unavailable</span>'; }
+                    ['BIAS', 'DARK', 'FLAT'].forEach(t => {
+                        const c = d[t];
+                        if (!c || !c.latest) issues.push(rg.name + ' ' + t + ' missing');
+                        else if (c.stale) issues.push(rg.name + ' ' + t + ' stale (' + c.age_days + ' d)');
+                    });
+                } catch (e) { inner = '<span style="opacity:.6;">unavailable</span>'; issues.push(rg.name + ' unavailable'); }
                 const label = rigs.length > 1
                     ? '<div style="font-weight:700;margin:' +
                       (blocks.length ? '.7rem' : '.1rem') + ' 0 .25rem;">' +
@@ -595,7 +696,9 @@
                 + 'each bucket\u2019s NEWEST set \u00b7 hover for session/date \u00b7 flats '
                 + 'stale 45d \u00b7 darks 90d \u00b7 bias 180d \u00b7 darks/bias need the '
                 + 'roof CLOSED</div>';
-        } catch (e) { el.textContent = 'calibration data unavailable'; }
+            Fold.status('calFold', issues.length ? 'warn' : 'ok',
+                issues.length ? issues.join(', ') : 'bias, darks and flats current on ' + rigs.map(r => r.name).join(' and '));
+        } catch (e) { el.textContent = 'calibration data unavailable'; Fold.status('calFold', 'fail', 'calibration data unavailable'); }
     }
     document.getElementById('calFlats').onclick = async () => {
         const rig = calRig();
@@ -673,6 +776,9 @@
              : d.behind ? ' · <span style="color:#eab308">' + d.behind +
                ' commit(s) behind — latest: ' + d.remote + '</span>'
              : ' · <span style="color:#4ade80">up to date</span>');
+        Fold.status('updFold', d.error ? 'warn' : d.behind ? 'info' : 'ok',
+            'running: ' + d.running + (d.error ? ', check failed' : d.behind ? ', ' + d.behind + ' commit(s) behind' : ', up to date'),
+            {noOpen: true});
     };
     document.getElementById('updGo').onclick = async () => {
         if (!confirm('Pull the latest code and restart PhotonScript?')) return;
@@ -706,6 +812,9 @@
                   data.summary.warn + ' warning(s).</div>'
                 : '<div class="go-banner go-no">NO-GO — ' + data.summary.fail +
                   ' failure(s) need attention before tonight.</div>';
+            Fold.status('pfFold', data.go ? (data.summary.warn ? 'warn' : 'ok') : 'fail',
+                (data.go ? 'GO' : 'NO-GO') + ': ' + data.summary.fail + ' fail, ' + data.summary.warn + ' warn (run ' +
+                new Date().toLocaleTimeString() + ')');
             box.innerHTML = go + data.checks.map(c =>
                 '<div class="check-row"><span class="badge badge-' + c.status + '">' +
                 c.status.toUpperCase() + '</span><span class="check-name">' + c.name +
@@ -714,6 +823,7 @@
         } catch (e) {
             document.getElementById('pfResults').innerHTML =
                 '<div class="go-banner go-no">Preflight request failed: ' + e + '</div>';
+            Fold.status('pfFold', 'fail', 'preflight request failed');
         }
         btn.disabled = false; st.textContent = '';
     }
@@ -723,6 +833,8 @@
         const r = await fetch('/api/config');
         const groups = await r.json();
         const box = document.getElementById('cfgFields');
+        Fold.status('cfgFold', 'info', groups.length + ' groups, ' +
+            groups.reduce((n, g) => n + g.fields.length, 0) + ' settings (.env); open to edit');
         box.innerHTML = groups.map(g =>
             '<div class="cfg-group"><h3>' + g.group + '</h3>' + g.fields.map(f => {
                 let input;
