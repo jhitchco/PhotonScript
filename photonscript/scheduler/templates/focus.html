@@ -84,7 +84,7 @@
                 <span class="fold-sum">seed history per rig, the learned model, its table and how far the last AFs landed</span></summary>
         <div style="display:flex;align-items:baseline;gap:1rem;margin:1rem 0 .8rem;">
             <h2 style="margin:0;">Autofocus seeds</h2>
-            <span class="muted">FOCPOS vs focuser temp — the cold-start position each rig seeds before its first AF. The two rigs are separate focusers.</span>
+            <span class="muted">FOCPOS vs focuser temp: the cold-start position each rig seeds before its first AF. The two rigs are separate focusers.</span>
         </div>
         <div class="focus-grid" id="focusCards"></div>
 
@@ -203,7 +203,7 @@
             scatter(series, osc.clamp)+
             (rows?'<table class="cal"><thead><tr><th>Night</th><th>FOCPOS</th>'+
              '<th>Temp</th><th>Frames</th></tr></thead><tbody>'+rows+
-             '</tbody></table>':'<div class="muted">No harvested nights yet — '+
+             '</tbody></table>':'<div class="muted">No harvested nights yet: '+
              'seeds from the static fallback until the OSC focuses well.</div>')+'</div>';
     }
 
