@@ -165,6 +165,8 @@ def test_refocus_triggers_ride_the_block_with_af_filter_and_offset():
         for t in afs:
             steps = _vals(t["TriggerRunner"], "Items")
             kinds = [_short(s["$type"]) for s in steps]
+            if kinds[0] == "MoveFocuserRelative":   # PS-271: undo the offset first
+                steps, kinds = steps[1:], kinds[1:]
             assert kinds[:2] == ["SwitchFilter", "RunAutofocus"]
             if af is not None:
                 assert steps[0]["Filter"]["_name"] == nsj._nina_filter_name(af)
