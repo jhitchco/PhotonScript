@@ -885,8 +885,20 @@ def _block_af_runner(af_filter: FilterType, offset: int,
     before the TakeExposure, i.e. after the SmartExposure's own
     SwitchFilter, so the next sub was shot through the AF filter
     (2026-10-07: 15 L 30 s subs inside the M31 R/G/B short runs, one after
-    each triggered AF)."""
-    out = [_switch_filter(af_filter), _autofocus()]
+    each triggered AF).
+
+    PS-271: inside a block the focuser already sits at the AF filter's
+    focus + offset, so the recipe first moves -offset back to the AF
+    filter's focus. A failed AF makes NINA restore the position it started
+    from; without the -offset that start already held the offset, the
+    +offset below landed on top of it, and the HFR trigger (which baselines
+    on the last GOOD AF) re-fired before every sub: 2026-11-22 the RC16
+    walked +120 steps per sub (5239 to 6679) and M33 P2 went from HFR 9 to
+    66 px. With it, success or failure, the block ends at focus + offset."""
+    out = []
+    if offset:
+        out.append(_move_focuser_relative(-offset))
+    out += [_switch_filter(af_filter), _autofocus()]
     if offset:
         out.append(_move_focuser_relative(offset))
     if imaging_filter is not None and imaging_filter != af_filter:

@@ -190,6 +190,8 @@ def test_af_trigger_runner_ends_on_the_blocks_filter(monkeypatch, no_moon,
                 continue
             steps = _vals(t["TriggerRunner"], "Items")
             kinds = [_short(x["$type"]) for x in steps]
+            if kinds[0] == "MoveFocuserRelative":   # PS-271: undo the offset
+                steps, kinds = steps[1:], kinds[1:]
             assert kinds[:2] == ["SwitchFilter", "RunAutofocus"]
             assert steps[0]["Filter"]["_name"] == NAME[F.LUMINANCE]
             if own != NAME[F.LUMINANCE]:
