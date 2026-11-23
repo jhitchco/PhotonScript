@@ -475,6 +475,34 @@
         if (want && nights.some(n => n.date === want)) loadDetail(want);
         else if (real.length) loadDetail(real[0].date);
     }
+    // 2026-11-23 (Jeremy, on the phone): a TPoint night listed all 100
+    // "TPoint point 001/100 alt .. az .." names in the title. Test steps
+    // fold into one entry with a count ("TPoint mapping (100 points)",
+    // "Optics test M 45 (10 steps)"), and a long list shows the first few
+    // with the rest behind a "+N more" toggle.
+    function titleTargets(names) {
+        const escT = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const groups = new Map();
+        for (const n of names) {
+            let key = n, unit = '', id = n;
+            let m = /^TPoint point (\d+)\/\d+/i.exec(n);
+            if (m) { key = 'TPoint mapping'; unit = 'point'; id = m[1]; }
+            else if ((m = /^(Optics test .+?) \S+ [+-]?\d+$/i.exec(n))) { key = m[1]; unit = 'step'; }
+            else if ((m = /^(Tracking test .+?) \d+(\.\d+)?s\b/i.exec(n))) { key = m[1]; unit = 'step'; }
+            const g = groups.get(key) || {ids: new Set(), unit};
+            if (unit) { g.unit = unit; g.ids.add(id); }   // a plain "TPoint mapping" sub joins, uncounted
+            groups.set(key, g);
+        }
+        const items = [...groups].map(([k, g]) => escT(k) +
+            (g.unit && g.ids.size > 1 ? ' <span style="opacity:.6">(' + g.ids.size + ' ' +
+                g.unit + 's)</span>' : ''));
+        const SHOW = 4;
+        if (items.length <= SHOW + 1) return items.join(', ');
+        return items.slice(0, SHOW).join(', ') +
+            ' <details style="display:inline"><summary style="display:inline;cursor:pointer;opacity:.7">+' +
+            (items.length - SHOW) + ' more</summary> ' + items.slice(SHOW).join(', ') + '</details>';
+    }
     async function loadDetail(date, keepView = false) {
         currentDate = date;
         // keepView preserves the chosen filters across a reload (re-grade,
@@ -569,7 +597,7 @@
         if (!names.length && d.plan) d.plan.targets.forEach(t => names.push(t.name));
         const hasUnknown = d.subs.some(s => !s.target || s.target === '?');
         document.getElementById('nightTitle').innerHTML =
-            date + (names.length ? ' — ' + names.join(', ') : '') +
+            date + (names.length ? ' &middot; ' + titleTargets(names) : '') +
             (hasUnknown ? ' <input id="assignTarget" placeholder="target name for this night" ' +
                 'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
                 'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.8rem;">' +
