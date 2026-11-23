@@ -9,6 +9,12 @@
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
     <style>
+        /* UI tidy 2026-11-23: no horizontal overflow at desktop width. The
+           default two-column main grid let the 800 px DSS2 preview (and the
+           520 px list cards) push a column past the viewport; one column
+           that may shrink, and media that scale to it. */
+        main { grid-template-columns: minmax(0, 1fr); }
+        main > section.panel { min-width: 0; }
         .mo-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; margin-bottom: .8rem; }
         .mo-field { display: flex; flex-direction: column; gap: .25rem; }
         .mo-field label { font-size: .75rem; opacity: .7; }
@@ -23,15 +29,16 @@
                      background:rgba(255,255,255,.06); border:1px solid #334155; color:#e2e8f0; }
         .grid-chip.active { background:#1d4ed8; border-color:#1d4ed8; }
         #moStage { position: relative; display: inline-block; margin-top: .5rem;
-                   background:#000; border-radius:8px; min-width: 320px; min-height: 120px; }
-        #moStage img { display: block; border-radius: 8px; max-width: 100%; }
+                   background:#000; border-radius:8px; min-width: min(320px, 100%); min-height: 120px;
+                   max-width: 100%; }
+        #moStage img { display: block; border-radius: 8px; max-width: 100%; height: auto; }
         #moStage svg { position: absolute; left: 0; top: 0; pointer-events: none; }
         .mo-meta { font-size: .85rem; opacity: .8; margin-top: .5rem; }
         .mo-warn { color: #fbbf24; font-size: .82rem; margin-top: .3rem; }
         .mo-err { color: #f87171; font-size: .82rem; margin-top: .3rem; }
         #moStatus { margin-left: .6rem; font-size: .9rem; }
-        .mo-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(520px,1fr)); gap:1rem; }
-        .mo-item { background:rgba(255,255,255,.03); border-radius:8px; padding:.8rem; }
+        .mo-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(520px, 100%),1fr)); gap:1rem; }
+        .mo-item { background:rgba(255,255,255,.03); border-radius:8px; padding:.8rem; min-width:0; overflow-x:auto; }
         table.mo-panels { font-size:.8rem; border-collapse:collapse; margin-top:.4rem; }
         table.mo-panels td, table.mo-panels th { padding:.15rem .5rem; text-align:left; }
     </style>
