@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/alt_chart.js?v={{ version }}"></script>
+    <script src="/static/js/fold.js?v={{ version }}"></script>
     <style>
         #wherePanel { grid-column: 1 / -1; grid-row: 1; }
         #allskyPanel { grid-column: 1; grid-row: 2; }
@@ -42,6 +43,30 @@
         .fbar > div { height: 100%; }
         .sub-row { display: flex; gap: .7rem; font-size: .78rem; padding: .25rem 0;
                    border-bottom: 1px solid rgba(255,255,255,.05); }
+        /* UI tidy 2026-11-23: one line per goal (click opens its card) */
+        .goals-grid.goal-lines { grid-template-columns: 1fr; gap: .25rem; }
+        details.goal-fold > summary { cursor: pointer; list-style: none; display: flex;
+            align-items: center; gap: .7rem; padding: .35rem .6rem; border-radius: 6px;
+            background: rgba(255,255,255,.03); font-size: .85rem; }
+        details.goal-fold > summary::-webkit-details-marker { display: none; }
+        details.goal-fold > summary::before { content: "\25B8"; opacity: .6; transition: transform .15s; }
+        details.goal-fold[open] > summary::before { transform: rotate(90deg); }
+        details.goal-fold > summary:hover { background: rgba(125,211,252,.07); }
+        details.goal-fold[open] > summary { border-radius: 6px 6px 0 0; }
+        details.goal-fold.inactive > summary { opacity: .5; }
+        .gl-name { flex: 0 0 15rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .gl-tag { font-size: .68rem; border: 1px solid currentColor; border-radius: 4px; padding: 0 .3rem; opacity: .8; }
+        .gl-bar { flex: 1; max-width: 26rem; }
+        .gl-pct { width: 3rem; text-align: right; opacity: .85; }
+        .gl-hours { width: 9.5rem; text-align: right; }
+        .gl-left { width: 8.5rem; text-align: right; opacity: .8; }
+        details.goal-fold > .goal-card { border-radius: 0 0 8px 8px; }
+        /* All-sky: thumbnail, click to enlarge */
+        #allskyImg { width: 100%; max-width: 360px; border-radius: 8px; display: block; cursor: zoom-in; }
+        #allskyZoom { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.85);
+            display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+        #allskyZoom[hidden] { display: none; }
+        #allskyZoom img { max-width: 95vw; max-height: 92vh; border-radius: 8px; }
     </style>
 </head>
 <body>
@@ -103,10 +128,23 @@
         <!-- 7-Night Outlook + ARM -->
         <section class="panel" id="allskyPanel">
             <h2>All-Sky Camera <span class="bd">(live from AARO, refreshes every 60 s)</span></h2>
-            <a href="https://allsky.astronomyacres.com/" target="_blank">
-                <img id="allskyImg" src="https://allsky.astronomyacres.com/image.jpg"
-                     style="width:100%;border-radius:8px;display:block;"
-                     alt="AARO all-sky camera"></a>
+            <!-- UI tidy 2026-11-23: a ~360 px thumbnail; click to enlarge -->
+            <img id="allskyImg" src="https://allsky.astronomyacres.com/image.jpg"
+                 alt="AARO all-sky camera" title="Click to enlarge">
+            <div class="bd" style="font-size:.75rem;margin-top:.3rem;">click to enlarge &middot;
+                <a href="https://allsky.astronomyacres.com/" target="_blank" style="color:#7dd3fc;">AARO all-sky page</a></div>
+            <div id="allskyZoom" hidden title="Click to close"><img id="allskyZoomImg" alt="AARO all-sky camera, enlarged"></div>
+            <script>
+            (function () {
+                var img = document.getElementById('allskyImg'), box = document.getElementById('allskyZoom');
+                img.addEventListener('click', function () {
+                    document.getElementById('allskyZoomImg').src = img.src;
+                    box.hidden = false;
+                });
+                box.addEventListener('click', function () { box.hidden = true; });
+                document.addEventListener('keydown', function (e) { if (e.key === 'Escape') box.hidden = true; });
+            })();
+            </script>
         </section>
         <section class="panel" id="outlookPanel">
             <h2>7-Night Outlook</h2>
@@ -142,9 +180,42 @@
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <!-- Lifecycle chips: dawn-shutdown result (with cooler verify)
+                 and the next noon auto re-arm countdown. Filled by refreshArm(). -->
+            <div id="armLifecycle" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
+            <!-- PS-150: NINA watchdog chip (not running / API down / up but
+                 silent / stuck / not imaging / idle while armed), one line
+                 per rig, from /api/nina/watch. -->
+            <div id="ninaWatchChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
+            <!-- Sub doctor chip: the current diagnosis per rig (cause + fix),
+                 from /api/sub-doctor; hidden while every rig is healthy. -->
+            <div id="subDoctorChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
+            <!-- Night pilot (2026-10-13): the last action and its result,
+                 from /api/night/pilot (scheduler/night_pilot.py). -->
+            <div id="nightPilotLine" hidden style="margin-bottom:.8rem;font-size:.85rem;
+                 padding:.35rem .6rem;border-radius:6px;border:1px solid #334155;"></div>
+            <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
+                 padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
+                 background:rgba(125,211,252,.06);white-space:normal;"></div>
+
+            <!-- PS-122: "Calibration owed" badge, a count per rig from
+                 /api/calibration/owed; links to the Calibration page card. -->
+            <a id="calOwedBadge" href="/calibration" hidden
+               style="display:inline-block;margin-bottom:.8rem;font-size:.85rem;
+               padding:.3rem .6rem;border-radius:6px;text-decoration:none;
+               border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.08);
+               color:#fcd34d;"></a>
+
+            <!-- UI tidy 2026-11-23: status lines that are fine fold into
+                 Details (dawn shutdown, dispatch lint, TPoint preflight,
+                 Piggy-600 companion, guided readiness, night mode, auto-arm).
+                 Warnings and the next event stay in armLifecycle above. -->
+            <details class="fold" id="armMore" data-fold="dash-arm-details" style="margin-bottom:.9rem;font-size:.85rem;">
+                <summary><b style="font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;opacity:.75;">Details</b><span class="fold-sum" id="armMoreSum"></span></summary>
+                <div id="armLifecycleOk" style="margin-bottom:.6rem;"></div>
             <!-- 2026-10-26: guided-night readiness (GET /api/guiding/readiness);
                  details on the Guiding tab -->
-            <div style="margin:-.4rem 0 .8rem;font-size:.85rem;" id="guidedReadyLine"
+            <div style="margin:0 0 .8rem;font-size:.85rem;" id="guidedReadyLine"
                  title="Can tonight be a guided night (guided Ha at 300 to 900 s)? Click for the ordered list with the fix for each."></div>
             <!-- Deep night (scheduler/deep_night.py): tonight's night mode.
                  split = the night shared among the goals; deep = one goal
@@ -182,31 +253,7 @@
                     guided (uncheck = unguided)</label>
                 <div id="autoArmChip" style="margin-top:.35rem;opacity:.85;"></div>
             </div>
-            <!-- Lifecycle chips: dawn-shutdown result (with cooler verify)
-                 and the next noon auto re-arm countdown. Filled by refreshArm(). -->
-            <div id="armLifecycle" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
-            <!-- PS-150: NINA watchdog chip (not running / API down / up but
-                 silent / stuck / not imaging / idle while armed), one line
-                 per rig, from /api/nina/watch. -->
-            <div id="ninaWatchChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
-            <!-- Sub doctor chip: the current diagnosis per rig (cause + fix),
-                 from /api/sub-doctor; hidden while every rig is healthy. -->
-            <div id="subDoctorChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
-            <!-- Night pilot (2026-10-13): the last action and its result,
-                 from /api/night/pilot (scheduler/night_pilot.py). -->
-            <div id="nightPilotLine" hidden style="margin-bottom:.8rem;font-size:.85rem;
-                 padding:.35rem .6rem;border-radius:6px;border:1px solid #334155;"></div>
-            <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
-                 padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
-                 background:rgba(125,211,252,.06);white-space:normal;"></div>
-
-            <!-- PS-122: "Calibration owed" badge, a count per rig from
-                 /api/calibration/owed; links to the Calibration page card. -->
-            <a id="calOwedBadge" href="/calibration" hidden
-               style="display:inline-block;margin-bottom:.8rem;font-size:.85rem;
-               padding:.3rem .6rem;border-radius:6px;text-decoration:none;
-               border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.08);
-               color:#fcd34d;"></a>
+            </details>
 
             <!-- Equipment: one pane per rig (RC16 + piggyback), rendered
                  consistently by refreshEquip() from /api/rigs. Each pane shows
@@ -243,8 +290,13 @@
              /api/morning/report (lights kept / rejected with top reasons,
              hours per goal, guiding health, stalls, library, calibration) -->
         <section class="panel" id="morningPanel">
-            <h2>Morning report <span class="bd" id="morningDate"></span></h2>
-            <div id="morningCard" class="bd">Loading...</div>
+            <!-- UI tidy 2026-11-23: open in the morning, folded after local
+                 noon (scope local time when known, else the browser clock) -->
+            <details class="fold" id="morningFold">
+                <summary><h2>Morning report <span class="bd" id="morningDate"></span></h2>
+                    <span class="fold-sum" id="morningSum"></span></summary>
+                <div id="morningCard" class="bd">Loading...</div>
+            </details>
         </section>
 
         <!-- PS-168: tracking drift from the PHD2 guide log (per night, trend
@@ -267,7 +319,7 @@
         <!-- Target Goals -->
         <section class="panel projects" style="grid-column:1 / -1;">
             <h2 style="display:flex;align-items:center;gap:1rem;">Target Goals
-                <span class="bd" id="syncChip" style="font-weight:normal;"></span></h2>
+                <span class="bd" id="goalsSum" style="font-weight:normal;text-transform:none;letter-spacing:0;"></span></h2>
             <div style="display:flex;gap:.6rem;margin-bottom:.8rem;">
                 <input id="addTargetName" list="catalogList"
                        placeholder="Add a target: pick from tonight's catalog, or name + RA/Dec (NGC 604 01:34:33 +30:47)"
@@ -286,6 +338,7 @@
                 <b style="color:#94a3b8;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;">Transfer to desktop</b>
                 <span id="xferMain">checking…</span>
                 <span id="xferNight" style="opacity:.8;"></span>
+                <span id="syncChip" style="opacity:.85;"></span>
                 <span id="xferFolders" style="opacity:.7;flex-basis:100%;"></span>
             </div>
             <details id="queueBox" style="margin:-.2rem 0 .8rem;" hidden>
@@ -294,7 +347,7 @@
             </details>
             <!-- PS-43 sync hygiene: static/js/sync_hygiene_panel.js -->
             <div class="sync-hygiene" data-mode="compact" style="margin:-.2rem 0 .8rem;" hidden></div>
-            <div id="projectManager" class="goals-grid"><p class="empty-state">Loading projects…</p></div>
+            <div id="projectManager" class="goals-grid goal-lines"><p class="empty-state">Loading projects…</p></div>
             <div class="actions" style="margin-top:.9rem;">
                 <a href="/api/tonight/sequence.json" class="btn btn-primary" download>Download NINA Sequence (Advanced Sequencer JSON)</a>
                 <a href="/api/tonight/sequence.json?now_mode=true" class="btn btn-secondary" download title="No dusk gate — for daytime testing only">Daytime test version</a>
@@ -443,7 +496,9 @@
         // Lifecycle chips: dawn-shutdown result + next noon auto re-arm
         const lc = document.getElementById('armLifecycle');
         if (lc) {
-            const chips = [];
+            const chips = [];      // warnings + next event: always visible
+            const okChips = [];    // fine: folded into Details (UI tidy 2026-11-23)
+            const okLabels = [];
             const w = d.watch;
             if (w && d.state === 'WATCHING') {
                 const due = w.shutdown_due_utc
@@ -468,7 +523,8 @@
                             done: 'done' + (rc.container ? ': ' + rc.container : ''),
                             fallback: 'NOT run: ' + (rc.detail || 'fell back to the normal plan')}[rc.status] || rc.status;
                 const bad = rc.status === 'fallback';
-                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                if (!bad) okLabels.push('recipe ' + (rc.label || rc.id) + ': ' + rc.status);
+                (bad ? chips : okChips).push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
                     'border:1px solid ' + (bad ? 'rgba(239,68,68,.7)' : 'rgba(56,189,248,.5)') +
                     ';background:rgba(56,189,248,.06);"><b>With recipe: ' + (rc.label || rc.id) +
                     '</b>' + (rc.opts && rc.opts.add ? ' (TPoint add ' + rc.opts.add + ')' : '') +
@@ -478,7 +534,8 @@
             const dg = d.dispatch_gate;
             if (dg && dg.line) {
                 const bad = !dg.ok, fb = dg.action === 'fallback';
-                chips.push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                if (!bad && !fb) okLabels.push('dispatch lint ' + (dg.level || 'OK'));
+                (bad || fb ? chips : okChips).push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
                     'border:1px solid ' + (bad ? 'rgba(239,68,68,.7)' : fb ? 'rgba(251,191,36,.6)' : 'rgba(74,222,128,.3)') +
                     ';"><b>Dispatch lint</b>: ' + String(dg.line).replace(/</g, '&lt;') +
                     ' <span style="opacity:.6">(' + String(dg.at || '').slice(11, 16) + ' UTC)</span></div>');
@@ -494,7 +551,8 @@
                     : skip ? 'skipped: ' + esc(cp.detail)
                     : 'NOT dispatched: ' + ({lint_refused: 'lint', failed: 'NINA #2', error: 'error'}[cp.state] || esc(cp.state)) +
                         (cp.detail ? ' ' + esc(cp.detail).slice(0, 200) : '') + ' (' + hhmm + ')';
-                chips.push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                if (ok || skip) okLabels.push('Piggy-600 ' + (ok ? 'dispatched' : 'skipped'));
+                (ok || skip ? okChips : chips).push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
                     'border:1px solid ' + (ok ? 'rgba(74,222,128,.3)' : skip ? 'rgba(148,163,184,.4)' : 'rgba(239,68,68,.7)') +
                     ';"><b>Piggy-600</b>: ' + txt +
                     (cp.reason && cp.reason !== 'arm' ? ' <span style="opacity:.6">(' + esc(cp.reason) + ')</span>' : '') +
@@ -505,7 +563,9 @@
             if (tp && tp.line) {
                 const blk = tp.level === 'block', warn = tp.level === 'warn';
                 const esc = s => String(s || '').replace(/</g, '&lt;');
-                chips.push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                const tpBad = blk || warn || tp.enforced;
+                if (!tpBad) okLabels.push('TPoint preflight OK');
+                (tpBad ? chips : okChips).push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
                     'border:1px solid ' + (blk ? 'rgba(239,68,68,.7)' : warn ? 'rgba(251,191,36,.6)' : 'rgba(74,222,128,.3)') +
                     ';"><b>TPoint preflight</b>: ' + esc(tp.line) +
                     (tp.fix ? ' &middot; <b>Fix</b>: ' + esc(tp.fix) : '') +
@@ -537,6 +597,8 @@
                     ? new Date(sd.at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
                     : '';
                 let verify = '⏳ verifying coolers…', border = 'rgba(125,211,252,.3)';
+                const sdBad = !!(sd.verify && !sd.verify.ok);
+                if (!sdBad) okLabels.push('dawn shutdown ' + when + (sd.verify && sd.verify.ok ? ', coolers off' : ''));
                 if (sd.verify && sd.verify.ok) {
                     verify = '&#10003; coolers confirmed OFF' + (sd.watched ? ', mount parked' : '');
                     border = 'rgba(74,222,128,.4)';
@@ -544,7 +606,7 @@
                     verify = '⚠ COOLER STILL ON — check NINA / Stop & Make Safe';
                     border = 'rgba(239,68,68,.7)';
                 }
-                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                (sdBad ? chips : okChips).push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
                     'border:1px solid ' + border + ';background:rgba(125,211,252,.06);">' +
                     '🌅 <b>Dawn shutdown</b> ' + when + ' — ' +
                     (sd.steps || []).join(' · ') + ' — <b>' + verify + '</b></div>');
@@ -560,7 +622,26 @@
             }
             lc.hidden = chips.length === 0;
             lc.innerHTML = chips.join('');
+            const okBox = document.getElementById('armLifecycleOk');
+            if (okBox) okBox.innerHTML = okChips.join('');
+            window._armOkLabels = okLabels;
+            armMoreSummary();
         }
+    }
+    // UI tidy 2026-11-23: one line on the folded Details row of Tonight's Run
+    function armMoreSummary() {
+        const el = document.getElementById('armMoreSum');
+        if (!el) return;
+        const parts = (window._armOkLabels || []).slice();
+        const nm = document.getElementById('nightModeSel');
+        if (nm) parts.push('night mode ' + nm.value);
+        const ae = document.getElementById('autoArmEvening');
+        const an = document.getElementById('autoArmNoon');
+        if (ae) parts.push('auto-arm ' + (ae.checked ? 'on' : 'off') + (an ? ', noon re-arm ' + (an.checked ? 'on' : 'off') : ''));
+        const gr = document.getElementById('guidedReadyLine');
+        if (gr && gr.textContent.trim()) parts.push(gr.textContent.trim());
+        el.textContent = parts.join(' \u00b7 ');
+        el.title = el.textContent;
     }
     function sunDiagramSVG(d) {
         const W = 640, H = 150, PAD = 6;
@@ -1624,6 +1705,9 @@
                 '<span style="color:' + col.red + '">' + n('red') + ' need you</span> · ' +
                 '<span style="color:' + col.amber + '">' + n('amber') + ' to watch</span> · ' +
                 '<span style="color:' + col.green + '">' + n('green') + ' good</span></div>';
+            const ms = document.getElementById('morningSum');
+            if (ms) ms.textContent = kept + ' subs kept, ' + n('red') + ' need you, ' +
+                n('amber') + ' to watch, ' + n('green') + ' good';
             box.innerHTML = summary + lines.map((l, i) => '<div style="margin:.15rem 0;' +
                 'padding-left:.45rem;border-left:3px solid ' + col[lv[i]] + ';">' +
                 esc(l) + '</div>').join('') +
@@ -1635,6 +1719,25 @@
     }
     refreshMorning();
     setInterval(refreshMorning, 600000);
+    // UI tidy 2026-11-23: the morning report is open before local noon and
+    // folded after it, until the user clicks it (then it stays as clicked).
+    window._morningAuto = true;
+    function morningAutoFold() {
+        const d = document.getElementById('morningFold');
+        if (!d || !window._morningAuto) return;
+        let h = new Date().getHours();
+        const base = (typeof _clockBase !== 'undefined') ? _clockBase : null;
+        if (base) h = parseInt(String(base).split(':')[0], 10);
+        d.open = h < 12;
+    }
+    (function () {
+        const d = document.getElementById('morningFold');
+        if (!d) return;
+        const s = d.querySelector('summary');
+        if (s) s.addEventListener('click', () => { window._morningAuto = false; });
+        morningAutoFold();
+        setInterval(morningAutoFold, 60000);
+    })();
     // PS-212: Tonight timeline (the storyline the pushes tell)
     async function refreshTonight() {
         const box = document.getElementById('tonightList');
@@ -1853,54 +1956,42 @@
 
     // function altChartSVG(d, opts): static/js/alt_chart.js (shared with the Targets page)
 
+    // UI tidy 2026-11-23: the Syncthing batch line used to repeat the transfer
+    // widget in the Target Goals header; it now adds only what the widget
+    // lacks (capture-drive free space, Syncthing errors, the batch reset).
     async function loadSync() {
         const el = document.getElementById('syncChip');
+        if (!el) return;
         try {
             const d = await (await fetch('/api/sync')).json();
-            const reset = ' · <a href="#" id="syncReset" title="start a fresh ' +
-                'batch counter" style="color:#7dd3fc;text-decoration:none;">reset</a>';
-            // Free space on the capture drive — how much room the night has left.
-            let diskStr = '';
+            const parts = [];
             if (d.disk && d.disk.free_gb != null) {
                 const pu = d.disk.percent_used;
                 const col = pu >= 92 ? '#f87171' : (pu >= 80 ? '#eab308' : '#4ade80');
-                diskStr = ' · <span title="free space on the capture drive (' +
-                    (d.disk.path || '') + ')" style="color:' + col + '">💾 ' +
-                    d.disk.free_gb + ' GB free</span>' +
-                    '<span style="opacity:.5"> of ' + d.disk.total_gb + ' GB</span>';
+                parts.push('<span title="free space on the capture drive (' +
+                    Fold.esc(d.disk.path || '') + ')" style="color:' + col + '">' +
+                    Fold.esc(d.disk.free_gb) + ' GB free</span><span style="opacity:.5"> of ' +
+                    Fold.esc(d.disk.total_gb) + ' GB</span>');
             }
             if (!d.configured) {
-                el.innerHTML = 'desktop sync: <span style="opacity:.6">not configured ' +
-                    '(Syncthing settings in System &amp; Config)</span>' + diskStr;
+                parts.push('<span style="opacity:.6">Syncthing not configured (System page)</span>');
             } else if (d.error) {
-                el.innerHTML = 'desktop sync: <span class="rej" style="color:#f87171">' +
-                    'unreachable</span>' + diskStr;
+                parts.push('<span style="color:#f87171">Syncthing unreachable</span>');
             } else {
                 const b = d.batch || {};
-                if (b.active) {
-                    // batch in flight: N of M this transfer, draining to 100%
-                    el.innerHTML = 'desktop sync: <span style="color:#eab308">⇅ ' +
-                        b.transferred_items + '/' + b.baseline_items + ' files · ' +
-                        b.pct + '% of this batch</span> <span style="opacity:.55">(' +
-                        fmtBytes(b.pending_bytes) + ' to go)</span>' + reset;
-                } else if (d.need_items > 0) {
-                    // pending but no batch anchored yet (e.g. just after reset)
-                    el.innerHTML = 'desktop sync: <span style="color:#eab308">⇅ ' +
-                        d.need_items + ' files pending</span> <span style="opacity:.55">(' +
-                        fmtBytes(d.need_bytes) + ')</span>' + reset;
-                } else {
-                    el.innerHTML = 'desktop sync: <span style="color:#4ade80">✓ up to date</span>' +
-                        (b.baseline_items ? ' <span style="opacity:.55">(batch of ' +
-                         b.baseline_items + ' done)</span>' : '') + reset;
-                }
-                el.innerHTML += diskStr;
-                const rb = document.getElementById('syncReset');
-                if (rb) rb.onclick = async (ev) => {
-                    ev.preventDefault();
-                    await fetch('/api/sync/reset', {method: 'POST'});
-                    loadSync();
-                };
+                if (b.active) parts.push('<span style="opacity:.7" title="Syncthing batch counter">batch ' +
+                    Fold.esc(b.transferred_items) + '/' + Fold.esc(b.baseline_items) + ' files, ' +
+                    Fold.esc(b.pct) + '%</span>');
+                parts.push('<a href="#" id="syncReset" title="start a fresh Syncthing batch counter" ' +
+                    'style="color:#7dd3fc;text-decoration:none;">reset batch</a>');
             }
+            el.innerHTML = parts.join(' &middot; ');
+            const rb = document.getElementById('syncReset');
+            if (rb) rb.onclick = async (ev) => {
+                ev.preventDefault();
+                await fetch('/api/sync/reset', {method: 'POST'});
+                loadSync();
+            };
         } catch (e) { el.textContent = ''; }
     }
     function fmtBytes(n) {
@@ -1949,7 +2040,12 @@
         const act = (body, label, extra) => '<span style="cursor:pointer;' + (extra || '') +
             '" onclick="patchMosaic(\'' + m.id + '\', ' + JSON.stringify(body).replace(/"/g, '&quot;') +
             ')">' + label + '</span>';
-        return '<div class="mosaic-card" data-mosaic="' + m.id + '" style="padding:.8rem;' +
+        const left = Math.max(0, (m.goal_h || 0) - (m.done_h || 0));
+        return goalFold('m-' + m.id, m.active, '<span class="gl-name" title="' + esc(m.name) + '">' +
+            esc(m.name) + '</span><span class="gl-tag" style="color:#22d3ee;">mosaic, ' +
+            m.panels.length + ' panels</span>', pct, m.done_h, m.goal_h, left,
+            m.complete ? 'done' : (m.active ? '' : 'paused')) +
+            '<div class="mosaic-card goal-card" data-mosaic="' + m.id + '" style="padding:.8rem;' +
             'border-radius:8px;background:rgba(255,255,255,.03);border-left:3px solid #22d3ee;' +
             (m.active ? '' : 'opacity:.45;') + '">' +
             '<div style="display:flex;gap:.7rem;align-items:center;">' +
@@ -1980,7 +2076,34 @@
                 MosaicPreview.svg(m, {w: 230, h: 130, wide: true}) : '') + '</div>' +
             '<div style="margin-top:.45rem;" id="alt-m-' + m.id + '" data-ra="' + first.ra_hours +
             '" data-dec="' + first.dec_degrees + '" data-name="' + esc(first.name) + '"></div>' +
-            '</div>';
+            '</div></details>';
+    }
+    // UI tidy 2026-11-23: each goal is one line (name, % bar, hours done /
+    // goal, left to go); a click opens its existing card with the filter grid.
+    // Returns the opening <details> + <summary>; the caller closes </details>.
+    function goalFold(key, active, nameHtml, pct, doneH, goalH, leftH, state) {
+        const p = Math.max(0, Math.min(100, Math.round(pct || 0)));
+        const f1 = v => (Math.round((Number(v) || 0) * 10) / 10).toFixed(1);
+        return '<details class="goal-fold' + (active ? '' : ' inactive') + '" data-goal-key="' +
+            Fold.esc(key) + '"><summary>' + nameHtml +
+            (state ? '<span class="gl-tag" style="color:' + (state === 'done' ? '#4ade80' : '#eab308') +
+             ';">' + Fold.esc(state) + '</span>' : '') +
+            '<div class="fbar gl-bar"><div style="width:' + p + '%;background:#7dd3fc;"></div></div>' +
+            '<span class="gl-pct">' + p + '%</span>' +
+            '<span class="gl-hours"><b>' + f1(doneH) + ' h</b> / ' + f1(goalH) + ' h</span>' +
+            '<span class="gl-left">' + (leftH > 0.05 ? 'Left ' + f1(leftH) + ' h' : 'goal met') + '</span>' +
+            '</summary>';
+    }
+    // hours over every rig of a goal (both-rig goals add the Piggy-600 plan)
+    function goalTotals(p) {
+        const rigs = Object.values(p.hours_by_rig || {});
+        if (!rigs.length) {
+            const g = p.budget_hours || 0, d = Math.min(p.hours_done || 0, g);
+            return {done: p.hours_done || 0, goal: g, left: Math.max(0, g - d), pct: g ? d / g * 100 : 0};
+        }
+        let g = 0, dn = 0, dc = 0;
+        rigs.forEach(r => { g += r.goal_h || 0; dn += r.done_h || 0; dc += Math.min(r.done_h || 0, r.goal_h || 0); });
+        return {done: dn, goal: g, left: Math.max(0, g - dc), pct: g ? dc / g * 100 : 0};
     }
     async function patchMosaic(id, body) {
         await fetch('/api/mosaics/' + id, {method: 'PATCH',
@@ -2012,6 +2135,14 @@
         const mosaicById = {};
         mosaics.forEach(m => { mosaicById[m.id] = m; });
         const mosaicShown = {};
+        // keep cards the user has open across this re-render
+        const wasOpen = {};
+        box.querySelectorAll('details.goal-fold[open]').forEach(d => { wasOpen[d.dataset.goalKey] = true; });
+        let nActive = 0, leftSum = 0;
+        projects.forEach(p => { if (p.active) { nActive++; leftSum += goalTotals(p).left; } });
+        const gs = document.getElementById('goalsSum');
+        if (gs) gs.textContent = projects.length + ' goals, ' + nActive + ' active, ' +
+            (Math.round(leftSum * 10) / 10) + ' h left on the active ones; click a goal for its filters';
         box.innerHTML = projects.map(p => {
             if (p.mosaic && p.mosaic.id && mosaicById[p.mosaic.id]) {
                 if (mosaicShown[p.mosaic.id]) return '';
@@ -2081,7 +2212,18 @@
                      : '') +
                     '</div>' + hdrShortRow(e, col);
             }).join('');
-            return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
+            const tot = goalTotals(p);
+            const rigTip = Object.entries(p.hours_by_rig || {}).map(([rg, h]) =>
+                (rg === 'piggyback' ? 'Piggy-600' : rg === 'rc16' ? 'RC16' : rg) + ' ' + h.done_h + ' / ' + h.goal_h + ' h').join(', ');
+            const gState = p.paused_tonight ? 'paused tonight' : (!p.active ? 'paused'
+                : (tot.left <= 0.05 ? 'done' : ''));
+            return goalFold('p-' + p.id, p.active && !p.paused_tonight,
+                '<span class="gl-name" title="' + Fold.esc(p.target.name + (rigTip ? ' (' + rigTip + ')' : '')) + '">' +
+                Fold.esc(p.target.name) + '</span>' +
+                (bothRigs ? '<span class="gl-tag" style="color:#f472b6;" title="' + Fold.esc(rigTip) + '">RC16 + Piggy</span>'
+                 : (piggyPlans.length && !rc16Plans.length ? '<span class="gl-tag" style="color:#f472b6;">Piggy</span>' : '')),
+                tot.pct, tot.done, tot.goal, tot.left, gState) +
+                '<div class="goal-card" style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
                 (p.active ? '' : 'opacity:.45;') + '">' +
                 '<div style="display:flex;gap:.7rem;align-items:center;">' +
                 '<img data-thumb="' + p.target.name + '" style="width:52px;height:52px;' +
@@ -2162,8 +2304,9 @@
                 '<div id="integ-' + p.id + '" style="font-size:.76rem;margin-top:.35rem;"></div>' +
                 '<div id="crev-' + p.id + '" style="font-size:.74rem;"></div>' +
                 '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
-                '</div>';
+                '</div></details>';
         }).join('');
+        box.querySelectorAll('details.goal-fold').forEach(d => { if (wasOpen[d.dataset.goalKey]) d.open = true; });
         if (window.Integrations) Integrations.campaign('integ-', 'crev-', {onChange: loadProjects});
 
         // goal input: commit on Enter/blur
