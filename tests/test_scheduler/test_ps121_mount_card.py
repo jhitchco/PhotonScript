@@ -260,7 +260,7 @@ def _mount_block():
 def test_dashboard_mount_row_reads_the_view():
     html, block = _mount_block()
     assert "mnt.view" in block and "_mountRows(v)" in block
-    assert "Parked &#8212; home" in block           # the old parked line stays
+    assert "'Mount', 'parked'" in block           # 2026-11-23: status chip
     for label in ("'RA'", "'Dec'", "'Alt'", "'Az'", "'Pier'", "'HA'", "epoch ?", "v.hint"):
         assert label in block
     assert "_fmtRa" not in html and "_fmtDec" not in html

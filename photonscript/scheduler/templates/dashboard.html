@@ -305,7 +305,7 @@
                 <summary class="bd" style="cursor:pointer;">Sideload a custom night into NINA (load only; Start stays in NINA)</summary>
                 <div style="margin:.5rem 0 0 .8rem;">
                     <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
-                        <select id="sideloadRecipe" style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.3rem .5rem;">
+                        <select id="sideloadRecipe" style="max-width:100%;min-width:0;text-overflow:ellipsis;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.3rem .5rem;">
                             <option value="tracking_test_then_tonight">Tracking test (auto-picked field), then tonight's targets + Piggy companion with lights</option>
                             <option value="optics_through_focus">Through-focus optics test (astigmatism / collimation, PS-148), then tonight's targets + Piggy companion with lights</option>
                             <option value="tpoint_mapping_then_tonight">TPoint mapping run (supervised, PS-171: blind alt/az points, Image Link each, no center or sync), then tonight's targets + Piggy companion with lights</option>
@@ -1338,6 +1338,9 @@
             body + '</div>';
     }
 
+    let _equipTab = (() => { try { return localStorage.getItem('equipTab') || 'rc16'; }
+        catch (e) { return 'rc16'; } })();
+    let _equipPointingOpen = false;
     async function refreshEquip() {
         if (document.hidden) return;   // PS-174: no NINA reads for a hidden tab
         const strip = document.getElementById('tsPiggy');
@@ -1361,114 +1364,152 @@
         }
         if (!host) return;
 
-        let html = '';
-        rigs.forEach((r, i) => {
-            const idx = i + 1;
-            const cam = (r.devices || {}).camera || {};
-            const foc = (r.devices || {}).focuser || {};
-            const mnt = (r.devices || {}).mount;
-            const icon = r.rig === 'rc16' ? '&#128301;' : '&#128301;&#215;2';
+        // 2026-11-23 (Jeremy, on the phone): the rows were long text lines
+        // that ran off the screen. One tab per rig (a dot sums its health),
+        // and under it the devices as small status chips. Same data, the
+        // cooler / dew chips are still the toggles, pointing folds away,
+        // notes show only when there is one.
+        const escE = s => String(s == null ? '' : s).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const COL = {ok: '#4ade80', warn: '#fbbf24', bad: '#f87171', info: '#7dd3fc', off: '#94a3b8'};
+        const chip = (st, label, value, attrs) =>
+            '<span ' + (attrs || '') + ' style="display:inline-flex;align-items:center;gap:.3rem;' +
+            'padding:.12rem .5rem;border-radius:999px;border:1px solid ' + COL[st] + '55;' +
+            'background:' + COL[st] + '12;font-size:.76rem;white-space:nowrap;line-height:1.5;">' +
+            '<i style="width:.45rem;height:.45rem;border-radius:50%;background:' + COL[st] +
+            ';display:inline-block;"></i><span style="opacity:.65;">' + label + '</span>' +
+            (value ? '<b style="font-weight:600;color:' + (st === 'off' ? '#cbd5e1' : COL[st]) +
+                ';">' + value + '</b>' : '') + '</span>';
+        const toggle = (id, st, label, value, enabled) =>
+            '<button id="' + id + '"' + (enabled ? '' : ' disabled') + ' style="all:unset;cursor:' +
+            (enabled ? 'pointer' : 'default') + ';opacity:' + (enabled ? '1' : '.45') + ';" title="' +
+            (enabled ? 'tap to switch ' + label + (st === 'ok' ? ' off' : ' on') : label + ': camera not connected') +
+            '">' + chip(st, label, value) + '</button>';
+        const rank = {ok: 0, info: 0, off: 1, warn: 2, bad: 3};
+        if (!rigs.some(r => r.rig === _equipTab) && rigs.length) _equipTab = rigs[0].rig;
+
+        let tabs = '', panes = '';
+        rigs.forEach(r => {
+            const dv = r.devices || {};
+            const cam = dv.camera || {}, foc = dv.focuser || {}, fw = dv.filterwheel;
+            const mnt = dv.mount, sm = dv.safetymonitor, fd = dv.flatdevice;
             const camOn = !!cam.connected;
-
-            // camera controls
+            const chips = [], notes = [];
+            let worst = 'ok';
+            const add = (st, html, counts) => {
+                chips.push(html);
+                if (counts !== false && rank[st] > rank[worst]) worst = st;
+            };
+            // camera: connection + sensor temp, then the cooler / dew toggles
+            const t = (camOn && cam.temp_c != null) ? Number(cam.temp_c).toFixed(1) + '&#176;C' : '';
+            add(camOn ? 'ok' : 'bad', chip(camOn ? 'ok' : 'bad', 'Camera', camOn ? t || 'on' : 'off'));
             const coolerOn = cam.cooler_on === true;
-            const pwr = (camOn && cam.cooler_power != null)
-                ? ' ' + Number(cam.cooler_power).toFixed(0) + '%' : '';
-            const coolLabel = !camOn ? 'cooler —'
-                : coolerOn ? ('cooler ON' + pwr) : 'cooler OFF';
-            const coolState = !camOn ? 'disabled' : (coolerOn ? 'on' : 'off');
+            const pwr = (camOn && coolerOn && cam.cooler_power != null)
+                ? Number(cam.cooler_power).toFixed(0) + '%' : '';
+            add(!camOn ? 'off' : coolerOn ? 'ok' : 'off',
+                toggle('cool-' + r.rig, !camOn ? 'off' : coolerOn ? 'ok' : 'off', 'Cooler',
+                       !camOn ? '-' : coolerOn ? ('on ' + pwr).trim() : 'off', camOn), false);
             const dew = cam.dew_heater_on;
-            const dewLabel = !camOn ? 'dew —'
-                : dew === true ? 'dew ON' : dew === false ? 'dew OFF' : 'dew ?';
-            const dewState = !camOn ? 'disabled'
-                : dew === true ? 'on' : dew === false ? 'off' : 'unknown';
-
-            let pane = '<div style="padding:.55rem .8rem;border:1px solid ' +
-                'rgba(148,163,184,.2);border-radius:8px;background:rgba(125,211,252,.04);">';
-            pane += '<div style="font-weight:700;margin-bottom:.4rem;white-space:nowrap;">' +
-                icon + ' ' + (r.name || r.rig) + '</div>';
-            // Camera N: status + cooler + dew toggles
-            pane += _equipRow('Camera ' + idx,
-                '<span style="white-space:nowrap;">' + _dot(camOn) + ' ' +
-                (camOn ? 'connected' : 'not connected') + '</span>' +
-                _toggleBtn('cool-' + r.rig, coolLabel, coolState) +
-                _toggleBtn('dew-' + r.rig, dewLabel, dewState));
-            // PS-61 cooler gate: lights held / skipped while off setpoint
+            add('off', toggle('dew-' + r.rig, !camOn ? 'off' : dew === true ? 'ok' : 'off', 'Dew',
+                              !camOn ? '-' : dew === true ? 'on' : dew === false ? 'off' : '?', camOn), false);
             if (cam.cooler_note) {
-                const note = String(cam.cooler_note).replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 const hot = /^not imaging|WARM/.test(cam.cooler_note);
-                pane += _equipRow('', '<span style="white-space:normal;color:' +
-                    (hot ? '#f87171' : '#fbbf24') + ';">&#10052; ' + note + '</span>');
+                notes.push('<span style="color:' + (hot ? '#f87171' : '#fbbf24') + ';">&#10052; ' +
+                    escE(cam.cooler_note) + '</span>');
+                if (hot) worst = 'bad';
             }
-            // Focuser N: status + position
-            const focPos = (foc.position != null) ? ' @ ' + foc.position : '';
-            pane += _equipRow('Focuser ' + idx,
-                '<span style="white-space:nowrap;">' + _dot(!!foc.connected) + ' ' +
-                (foc.connected ? ('connected' + focPos) : 'not connected') + '</span>');
-            // Mount (RC16 owns it; shared with the piggyback): state, target,
-            // then where it points (PS-121: RA/Dec + epoch, Alt/Az, pier, HA)
+            // focuser + filter wheel
+            add(foc.connected ? 'ok' : 'bad', chip(foc.connected ? 'ok' : 'bad', 'Focuser',
+                foc.connected ? (foc.position != null ? String(foc.position) : 'on') : 'off'));
+            if (fw) add(fw.connected ? 'ok' : 'bad', chip(fw.connected ? 'ok' : 'bad', 'Filters',
+                fw.connected ? escE(fw.filter || fw.name || 'on') : 'off'));
+            // Mount (RC16 owns it; shared with the piggyback): state + target,
+            // the pointing (PS-121: RA/Dec + epoch, Alt/Az, pier, HA) folds away
+            let pointing = '';
             if (mnt) {
                 const v = mnt.view || {connected: !!mnt.connected};
-                let m;
-                if (!mnt.connected) m = _dot(false) + ' not connected';
-                else if (mnt.parked) m = _dot(true) + ' Parked &#8212; home';
-                else {
-                    m = _dot(true) + ' ' + _mountState(v);
-                    if (r.target) m += ' <b style="color:#7dd3fc;white-space:nowrap;">&#8594; ' +
-                        r.target + '</b>';
-                }
-                pane += _equipRow('Mount', '<span>' + m + '</span>');
-                pane += _mountRows(v);
-            }
-            // Roof (both rigs, Night strip): the one shared safety monitor as
-            // each NINA sees it. RC16: NINA #1 owns it (what pauses the night).
-            // Piggy-600: seeing it lets the companion shoot roof-closed
-            // darks/bias on arm.
-            const sm = (r.devices || {}).safetymonitor;
-            if (sm) {
-                const isRc = r.rig === 'rc16';
-                let roof;
-                if (sm.connected) {
-                    const safe = sm.safe === true ? '<span style="color:#4ade80;">roof open (safe)</span>'
-                        : sm.safe === false ? '<span style="color:#f87171;">roof closed (unsafe)</span>'
-                        : '<span style="opacity:.7;">no signal</span>';
-                    roof = _dot(true) + ' seeing &middot; ' + safe + (isRc ? ''
-                        : '<span style="opacity:.55;"> &middot; can do darks/bias</span>');
+                if (!mnt.connected) {
+                    add('bad', chip('bad', 'Mount', 'off'));
+                    if (v.hint) notes.push('<span style="opacity:.7;">' + escE(v.hint) + '</span>');
+                } else if (mnt.parked) {
+                    add('ok', chip('info', 'Mount', 'parked')); // was 'Parked &#8212; home'
                 } else {
-                    roof = _dot(false) + (isRc
-                        ? ' <span style="opacity:.75;">safety monitor not connected on NINA #1</span>'
-                        : ' <span style="opacity:.75;">not seeing &#8212; flats only ' +
-                          '(add the safety monitor to the NINA #2 profile)</span>');
+                    const st = v.state || '-';
+                    add('ok', chip(st === 'tracking' ? 'ok' : st === 'slewing' ? 'warn' : 'info', 'Mount',
+                        escE(st) + (r.target ? ' &#8594; ' + escE(r.target) : '')));
                 }
-                pane += _equipRow('Roof', '<span style="white-space:normal;">' + roof + '</span>');
+                if (mnt.connected) {
+                    pointing = '<details data-pointing="' + r.rig + '"' +
+                        (_equipPointingOpen ? ' open' : '') + ' style="margin-top:.3rem;">' +
+                        '<summary style="cursor:pointer;font-size:.74rem;opacity:.65;">pointing' +
+                        (v.pier && v.pier !== '-' ? ' &middot; pier ' + escE(v.pier) : '') +
+                        (v.alt && v.alt !== '-' ? ' &middot; alt ' + escE(v.alt) + '&#176;' : '') +
+                        '</summary>' + _mountRows(v) + '</details>';
+                }
+            }
+            // Roof (both rigs): the one shared safety monitor as each NINA
+            // sees it (Piggy-600 seeing it can shoot roof-closed darks/bias)
+            if (sm) {
+                if (sm.connected) {
+                    const s = sm.safe === true ? 'ok' : sm.safe === false ? 'bad' : 'warn';
+                    add(s, chip(s, 'Roof', sm.safe === true ? 'open' : sm.safe === false ? 'closed' : 'no signal',
+                        r.rig === 'rc16' ? '' : 'title="NINA #2 sees the roof: it can do darks/bias"'), false);
+                } else {
+                    add('bad', chip('bad', 'Roof', 'not seen'));
+                    notes.push('<span style="opacity:.7;">' + (r.rig === 'rc16'
+                        ? 'safety monitor not connected on NINA #1'
+                        : 'not seeing the roof: flats only (add the safety monitor to the NINA #2 profile)') +
+                        '</span>');
+                }
             }
             // PS-189: Wanderer Cover (dust cover + flat panel) on the Piggy-600
-            const fd = (r.devices || {}).flatdevice;
             if (fd) {
-                let cov;
                 if (fd.connected) {
-                    const st = String(fd.cover || 'unknown');
-                    const col = st === 'open' ? '#4ade80' : st === 'closed' ? '#7dd3fc' : '#fbbf24';
-                    cov = _dot(true) + ' <span style="color:' + col + ';">cover ' + st + '</span>' +
-                        (fd.light_on === true ? ' &#183; <span style="color:#fbbf24;">panel ON' +
-                            (fd.brightness != null ? ' (' + fd.brightness + ')' : '') + '</span>'
-                            : fd.light_on === false ? '<span style="opacity:.6;"> &#183; panel off</span>' : '');
+                    const c = String(fd.cover || 'unknown');
+                    add(c === 'open' ? 'ok' : c === 'closed' ? 'info' : 'warn',
+                        chip(c === 'open' ? 'ok' : c === 'closed' ? 'info' : 'warn', 'Cover', escE(c)), false);
+                    if (fd.light_on === true) add('warn', chip('warn', 'Panel',
+                        'on' + (fd.brightness != null ? ' ' + fd.brightness : '')), false);
                 } else {
-                    cov = _dot(false) + ' <span style="opacity:.75;">flat panel not connected</span>';
+                    add('bad', chip('bad', 'Cover', 'off'));
                 }
-                if (fd.cover_note) {
-                    const note = String(fd.cover_note).replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    cov += '<br><span style="color:' + (/^not imaging/.test(fd.cover_note) ? '#f87171' : '#fbbf24') +
-                        ';">' + note + '</span>';
-                }
-                pane += _equipRow('Cover', '<span style="white-space:normal;">' + cov + '</span>');
+                if (fd.cover_note) notes.push('<span style="color:' +
+                    (/^not imaging/.test(fd.cover_note) ? '#f87171' : '#fbbf24') + ';">' +
+                    escE(fd.cover_note) + '</span>');
             }
-            pane += '</div>';
-            html += pane;
+            const sel = r.rig === _equipTab;
+            const icon = r.rig === 'rc16' ? '&#128301;' : '&#128301;&#215;2';
+            tabs += '<button role="tab" data-equip-tab="' + r.rig + '" aria-selected="' + sel + '" ' +
+                'style="all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:.35rem;' +
+                'padding:.3rem .7rem;font-size:.82rem;font-weight:600;border-bottom:2px solid ' +
+                (sel ? '#7dd3fc' : 'transparent') + ';opacity:' + (sel ? '1' : '.65') + ';">' +
+                icon + ' ' + escE(r.name || r.rig) +
+                '<i style="width:.5rem;height:.5rem;border-radius:50%;display:inline-block;background:' +
+                COL[worst] + ';"></i></button>';
+            panes += '<div role="tabpanel" data-equip-pane="' + r.rig + '"' + (sel ? '' : ' hidden') +
+                ' style="padding:.5rem .1rem .1rem;">' +
+                '<div style="display:flex;flex-wrap:wrap;gap:.3rem .35rem;">' + chips.join('') + '</div>' +
+                (notes.length ? '<div style="font-size:.74rem;margin-top:.35rem;line-height:1.4;">' +
+                    notes.join('<br>') + '</div>' : '') + pointing + '</div>';
         });
-        host.innerHTML = html;
+        host.innerHTML = '<div style="padding:.35rem .7rem .55rem;border:1px solid rgba(148,163,184,.2);' +
+            'border-radius:8px;background:rgba(125,211,252,.04);">' +
+            '<div role="tablist" style="display:flex;gap:.2rem;border-bottom:1px solid rgba(148,163,184,.15);' +
+            'overflow-x:auto;">' + tabs + '</div>' + panes + '</div>';
+        host.querySelectorAll('[data-equip-tab]').forEach(b => b.onclick = () => {
+            _equipTab = b.dataset.equipTab;
+            try { localStorage.setItem('equipTab', _equipTab); } catch (e) { /* private mode */ }
+            host.querySelectorAll('[data-equip-tab]').forEach(x => {
+                const on = x.dataset.equipTab === _equipTab;
+                x.setAttribute('aria-selected', on);
+                x.style.borderBottomColor = on ? '#7dd3fc' : 'transparent';
+                x.style.opacity = on ? '1' : '.65';
+            });
+            host.querySelectorAll('[data-equip-pane]').forEach(p =>
+                p.hidden = p.dataset.equipPane !== _equipTab);
+        });
+        host.querySelectorAll('details[data-pointing]').forEach(d =>
+            d.ontoggle = () => { _equipPointingOpen = d.open; });
 
         // wire toggles (innerHTML was replaced, so re-attach each refresh)
         rigs.forEach(r => {
