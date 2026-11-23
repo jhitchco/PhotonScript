@@ -1135,9 +1135,19 @@
         paintPva(subRig === 'ALL' ? d.table
                  : d.table.filter(t => (t.rig || 'rc16') === subRig));
         // Target chips (only on multi-target nights)
+        // 2026-11-23: test steps share one chip ("TPoint mapping 100"),
+        // the same folding as the night title (titleTargets)
+        const tGroup = s => {
+            const t = (s.target && s.target !== '?') ? s.target : '?';
+            let m;
+            if (/^TPoint point \d+\/\d+/i.test(t)) return 'TPoint mapping';
+            if ((m = /^(Optics test .+?) \S+ [+-]?\d+$/i.exec(t))) return m[1];
+            if ((m = /^(Tracking test .+?) \d+(\.\d+)?s/i.exec(t))) return m[1];
+            return t;
+        };
         const tCounts = {};
         all0.forEach(s => {
-            const t = (s.target && s.target !== '?') ? s.target : '?';
+            const t = tGroup(s);
             tCounts[t] = (tCounts[t] || 0) + 1;
         });
         const tNames = Object.keys(tCounts);
@@ -1151,7 +1161,7 @@
                 el.addEventListener('click', () => { subTarget = el.dataset.t; renderSubs(); }));
         } else { tBox.innerHTML = ''; }
         const all = subTarget === 'ALL' ? all0
-            : all0.filter(s => ((s.target && s.target !== '?') ? s.target : '?') === subTarget);
+            : all0.filter(s => tGroup(s) === subTarget);
         // Filter chips with counts
         const counts = {};
         all.forEach(s => { counts[s.filter] = (counts[s.filter] || 0) + 1; });

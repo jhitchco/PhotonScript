@@ -154,7 +154,7 @@
         </section>
 
         <section class="panel" id="attention">
-            <h2>What to change (PS-119)</h2>
+            <details class="fold" data-fold="g-attn" data-sum-from="attnLine"><summary><h2>What to change (PS-119)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">Every fail, then every warn, from the stored PHD2 and TheSky / TPoint audits, the calibration record, the pulse self-test, the guide guard and the guide-star tuner; within each, what matters for tonight's guiding first. Built from cached records only (Refresh in a section re-runs that audit). Apply does a dry run first and asks before changing anything. A reading older than the last PHD2 settings change or 12 h is marked stale.</p>
             <div class="bd" id="attnLine">loading...</div>
             <div id="attnItems"></div>
@@ -164,6 +164,7 @@
                 <button class="btn btn-secondary" id="attnRefresh">Refresh</button>
                 <span class="bd" id="attnStatus"></span>
             </div>
+        </details>
         </section>
 
         <section class="panel g-folded" id="liveSec">
@@ -273,7 +274,7 @@
         </section>
 
         <section class="panel" id="tpointSec">
-            <h2>TheSky / TPoint Audit (PS-104)</h2>
+            <details class="fold" data-fold="g-tpoint" data-sum-from="tsInfo"><summary><h2>TheSky / TPoint Audit (PS-104)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <div class="bd" id="tsWatch" title="TPoint run watcher: reads TPoint's files only (GET /api/thesky/tpoint/watch); history: GET /api/thesky/tpoint/history">TPoint: loading...</div>
             <div class="bd" id="tsCoverage" title="TPoint coverage: where the model has samples, by HA band (east of the meridian before the flip, west after it) and Dec band. Empty / thin cells = the pointing model extrapolates there. Full table and top-up: photonscript tpoint-stats or GET /api/thesky/tpoint"></div>
             <p class="g-intro">Report only: TheSky's settings (read through its TCP scripting with read-only scripts), the ASTAP Image Link check on the newest RC16 L frame, NINA's first-slew error from its Center log, and the TPoint record you enter below, against config/thesky/desired_rc16.toml. Nothing here writes TheSky, moves the mount or takes an image. Runs at arm and on Refresh. TPoint numbers, ProTrack, catalogs and the run binning are not in TheSky's scripting API: enter them after each TPoint session. Unknown = no source could read it.</p>
@@ -321,6 +322,7 @@
                     <span class="bd" id="tsManualStatus"></span>
                 </div>
             </form>
+        </details>
         </section>
     </main>
 
@@ -345,7 +347,15 @@
                     var n = src.childNodes[i];
                     var block = n.nodeType === 1 && /^(DIV|P|TABLE|UL|OL|BR|H3|H4|DETAILS)$/.test(n.tagName);
                     if (block && t.trim()) break;
-                    t += n.textContent || '';
+                    // every text piece with a space between (label / value
+                    // cells must not run together: "statenot reachable")
+                    if (n.nodeType === 1) {
+                        var w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT), x, parts = [];
+                        while ((x = w.nextNode())) { var v = x.textContent.trim(); if (v) parts.push(v); }
+                        t += ' ' + parts.join(' ');
+                    } else {
+                        t += n.textContent || '';
+                    }
                     if (block) break;
                 }
                 t = t.replace(/\s+/g, ' ').trim();

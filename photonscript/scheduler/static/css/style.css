@@ -490,5 +490,5 @@ details.fold[open] > summary { margin-bottom: .8rem; }
 .fold-dot.warn { background: #eab308; }
 .fold-dot.fail { background: #f87171; }
 .fold-sum { opacity: .75; font-size: .85rem; white-space: nowrap; overflow: hidden;
-            text-overflow: ellipsis; min-width: 0; flex: 1; }
+            text-overflow: ellipsis; min-width: 0; flex: 1; width: 0; }  /* width 0: a long summary must not widen a grid column */
 details.fold[open] > summary > .fold-sum { opacity: .55; }
