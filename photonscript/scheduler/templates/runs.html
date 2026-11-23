@@ -13,6 +13,22 @@
     <script src="/static/js/runs_grid.js?v={{ version }}"></script>
     <style>
         .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        /* UI tidy 2026-11-23: review counters + the rest folded; viewer keys in a "?" */
+        .kbd-help { display:inline-flex; align-items:center; justify-content:center; width:1.15rem;
+                    height:1.15rem; border-radius:50%; border:1px solid rgba(148,163,184,.6);
+                    font-size:.72rem; font-weight:700; cursor:help; opacity:.75; margin-left:.4rem;
+                    vertical-align:middle; position:relative; text-transform:none; letter-spacing:0; }
+        .kbd-help:hover, .kbd-help:focus { opacity:1; outline:none; }
+        .kbd-help .kbd-tip { display:none; position:absolute; left:1.5rem; top:-.3rem; z-index:50;
+                    white-space:nowrap; background:#0b1220; color:#e2e8f0; border:1px solid #334155;
+                    border-radius:6px; padding:.35rem .6rem; font-weight:normal; font-size:.78rem; }
+        .kbd-help:hover .kbd-tip, .kbd-help:focus .kbd-tip { display:block; }
+        .rv-counters { display:flex; gap:.45rem; flex-wrap:wrap; align-items:center; }
+        .rv-c { display:inline-flex; align-items:baseline; gap:.3rem; padding:.15rem .6rem;
+                border-radius:999px; border:1px solid; font-size:.8rem; }
+        .rv-c b { font-size:.95rem; }
+        details.rv-more { font-size:.8rem; }
+        details.rv-more > summary { cursor:pointer; opacity:.7; }
         main { max-width: 1560px; margin: 0 auto; display: grid;
                grid-template-columns: 215px 1fr; gap: 1.2rem;
                align-items: start; }
@@ -298,10 +314,14 @@
             <div id="safety" class="bd"></div>
             </div><!-- /tabSummary -->
             <div id="tabReview" role="tabpanel" hidden>
-            <h2 style="margin-top:.2rem;">Subs <span class="bd" style="font-weight:normal;">(viewer: S star overlay, L loupe, M 3x3, F full screen / docked)</span></h2>
-            <div class="bd" id="scoreReportLine" title="PS-108: what the 0-100 score would do vs today's verdicts (photonscript score-report)"></div>
-            <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
-                <span class="bd" id="reviewCounts"></span>
+            <h2 style="margin-top:.2rem;">Subs <span class="kbd-help" tabindex="0" aria-label="Viewer keys: S star overlay, L loupe, M 3x3, F full screen / docked">?<span class="kbd-tip">Viewer keys: S star overlay, L loupe, M 3x3, F full screen / docked</span></span></h2>
+            <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;flex-wrap:wrap;">
+                <span class="rv-counters" id="reviewCounters"></span>
+                <details class="rv-more" id="reviewMore">
+                    <summary>details</summary>
+                    <div class="bd" id="reviewCounts" style="margin-top:.25rem;"></div>
+                    <div class="bd" id="scoreReportLine" style="margin-top:.25rem;" title="PS-108: what the 0-100 score would do vs today's verdicts (photonscript score-report)"></div>
+                </details>
                 <button class="btn btn-primary" id="approveShownBtn" hidden>Approve shown</button>
                 <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
             </div>
@@ -1017,6 +1037,14 @@
                 String(d.autofile.at || '').replace(/"/g, '') + ' (GET /api/runs/' + d.date +
                 '/autofile)">dawn: ' + String(d.autofile.line).replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;') + '</span>' : '');
+        // UI tidy 2026-11-23: four counters up front, the full line above in the fold
+        const ctr = (n, label, col, tip) => '<span class="rv-c" style="color:' + col +
+            ';border-color:' + col + '66;" title="' + tip + '"><b>' + n + '</b>' + label + '</span>';
+        document.getElementById('reviewCounters').innerHTML =
+            ctr(appr + pend, 'approve', '#4ade80', 'approved, not on the desktop yet (' + pend + ' syncing)') +
+            ctr(rev, 'review', '#eab308', 'passed QA, waiting for a verdict') +
+            ctr(rej, 'reject', '#f87171', 'rejected by QA or by hand' + (offT ? ' (+' + offT + ' off target)' : '')) +
+            ctr(done, 'transferred', '#7dd3fc', 'on the desktop');
         const btn = document.getElementById('approveBtn');
         btn.hidden = rev === 0;
         btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
