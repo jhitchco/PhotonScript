@@ -64,6 +64,18 @@
         details.tsec > summary .hint { text-transform:none; letter-spacing:0; opacity:.6;
                margin-left:.6rem; font-size:.68rem; }
         .sub { margin:.7rem 0 .35rem; font-size:.7rem; opacity:.55; }
+        /* UI tidy 2026-11-23: a mosaic is one row; its panels open below it */
+        details.mos { margin:.5rem 0; }
+        details.mos > summary { cursor:pointer; list-style:none; display:flex; align-items:center;
+               gap:.7rem; padding:.45rem .7rem; border-radius:8px; font-size:.82rem;
+               background:rgba(255,255,255,.04); border-left:3px solid #22d3ee; }
+        details.mos > summary::-webkit-details-marker { display:none; }
+        details.mos > summary::before { content:'\25B8'; opacity:.6; transition:transform .15s; }
+        details.mos[open] > summary::before { transform:rotate(90deg); }
+        details.mos > summary:hover { background:rgba(255,255,255,.07); }
+        details.mos > summary .mname { font-weight:700; }
+        details.mos > summary .bar { flex:1; max-width:18rem; }
+        details.mos > .tgrid { margin-top:.5rem; }
     </style>
 </head>
 <body>
@@ -80,11 +92,12 @@
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 // section, heading, hint, open by default (Tests start collapsed; Paused too:
-// 17 goals, 9 of them empty mosaic panels, so Active is what can run tonight)
+// 17 goals, 9 of them empty mosaic panels, so Active is what can run tonight;
+// UI tidy 2026-11-23: Done starts collapsed as well)
 const SECTIONS = [
     ['active', 'Active', 'goals still short of their goal: tonight and the campaign', true],
     ['paused', 'Paused', 'inactive goals short of their goal (resume on the goal page)', false],
-    ['done', 'Done', 'goal met, or imaged with no goal', true],
+    ['done', 'Done', 'goal met, or imaged with no goal', false],
     ['test', 'Tests', 'tracking / optics tests, TPoint, calibration, unattributed', false],
 ];
 const LS_KEY = 'photonscript.targets.sections';
@@ -144,16 +157,33 @@ function card(t) {
         (tr ? ' \u00b7 top reject: ' + esc(tr.label) + ' (' + tr.count + ')' : '') +
         '</div></div></a>';
 }
-// PS-111: mosaic panels group under their mosaic, in capture order
-function grids(list) {
+// PS-111: mosaic panels group under their mosaic, in capture order.
+// UI tidy 2026-11-23: each mosaic is one row ("name, N panels, x h of y h",
+// hours over every panel on the page); a click opens its panel cards.
+let ALL = [];
+function mosaicRow(m, ps, sec) {
+    const every = ALL.filter(t => t.mosaic && t.mosaic.id === m.id);
+    let done = 0, goal = 0;
+    every.forEach(t => { if (t.goal) { done += t.goal.hours_done || 0; goal += t.goal.hours_goal || 0; } });
+    const pct = goal ? Math.min(100, Math.round(done / goal * 100)) : 0;
+    const r1 = v => Math.round(v * 10) / 10;
+    const here = ps.length < m.of ? ' (' + ps.length + ' in this section)' : '';
+    const key = 'mos:' + sec + ':' + m.id;
+    const isOpen = !!loadOpen()[key];
+    return '<details class="mos" data-sec="' + esc(key) + '"' + (isOpen ? ' open' : '') + '><summary>' +
+        '<span class="mname">' + esc(m.name) + '</span>' +
+        '<span>' + m.of + ' panels' + here + ', ' + r1(done) + ' h of ' + r1(goal) + ' h</span>' +
+        '<span class="bar" title="' + pct + '%"><i style="width:' + pct + '%"></i></span>' +
+        '<span class="muted">' + pct + '% \u00b7 finished in order</span></summary>' +
+        '<div class="tgrid">' + ps.map(card).join('') + '</div></details>';
+}
+function grids(list, sec) {
     const plain = list.filter(t => !t.mosaic), mos = {};
     list.filter(t => t.mosaic).forEach(t => (mos[t.mosaic.id] = mos[t.mosaic.id] || []).push(t));
     let h = plain.length ? '<div class="tgrid">' + plain.map(card).join('') + '</div>' : '';
     Object.values(mos).forEach(ps => {
         ps.sort((a, b) => a.mosaic.panel - b.mosaic.panel);
-        const m = ps[0].mosaic;
-        h += '<div class="sub">Mosaic: ' + esc(m.name) + ' (' + m.of +
-             ' panels, finished in order)</div><div class="tgrid">' + ps.map(card).join('') + '</div>';
+        h += mosaicRow(ps[0].mosaic, ps, sec);
     });
     return h;
 }
@@ -162,6 +192,7 @@ async function pics(root) {
     // then for a goal the reference image (cached DSS2 cutout or own best sub)
     for (const el of root.querySelectorAll('.pic[data-name]:not([data-tried])')) {
         if (!el.dataset.name) continue;
+        if (el.closest('details:not([open])')) continue;   // folded: load when opened
         el.dataset.tried = '1';
         let url = null, label = '';
         try {
@@ -253,6 +284,7 @@ async function loadTonight() {
 }
 fetch('/api/targets').then(r => r.json()).then(d => {
     const ts = d.targets || [];
+    ALL = ts;
     const open = loadOpen();
     const n = ts.reduce((a, t) => a + t.counts.total, 0);
     document.getElementById('tSummary').textContent = ts.length + ' targets \u00b7 ' +
@@ -267,9 +299,9 @@ fetch('/api/targets').then(r => r.json()).then(d => {
         const isOpen = open[k] == null ? def : !!open[k];
         return '<details class="tsec" data-sec="' + k + '"' + (isOpen ? ' open' : '') +
             '><summary>' + esc(label) + '<span class="n">' + list.length + '</span>' +
-            '<span class="hint">' + esc(hint) + '</span></summary>' + grids(list) + '</details>';
+            '<span class="hint">' + esc(hint) + '</span></summary>' + grids(list, k) + '</details>';
     }).join('');
-    box.querySelectorAll('details.tsec').forEach(det => {
+    box.querySelectorAll('details.tsec, details.mos').forEach(det => {
         // a <details open> also fires one toggle on insert: only a real
         // change is remembered (defaults stay defaults)
         let last = det.open;

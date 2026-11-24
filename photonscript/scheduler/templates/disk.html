@@ -198,6 +198,20 @@ function cleanup(d) {
         (it[1] && it[2] ? '<pre class="cmd">' + esc(it[1].command) + '</pre>' : '') + '</div>').join('');
 }
 
+// UI tidy 2026-11-23: a human age ("21 days ago") instead of minutes
+function ago(sec) {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    if (s < 90) return s + ' s ago';
+    if (s < 5400) return Math.round(s / 60) + ' min ago';
+    if (s < 129600) return Math.round(s / 3600) + ' h ago';
+    const dd = Math.round(s / 86400);
+    return dd + ' day' + (dd === 1 ? '' : 's') + ' ago';
+}
+// A scan older than 24 h refreshes once on page load: the same read-only
+// background scan as the Rescan button (GET /api/disk?refresh=1).
+const AUTO_RESCAN_S = 86400;
+let AUTO_RESCANNED = false;
+
 function render(d) {
     DATA = d;
     const info = document.getElementById('scanInfo');
@@ -205,10 +219,16 @@ function render(d) {
         info.textContent = (d.scanning ? 'Scanning (' + (d.progress || 0).toLocaleString() +
             ' files so far)... ' : '') + (d.note || '') + (d.scan_error ? ' Error: ' + d.scan_error : '');
     } else {
-        info.textContent = 'Scanned ' + d.scanned_at + ' (' + Math.round(d.age_s / 60) + ' min ago, took ' +
+        info.textContent = 'Scanned ' + d.scanned_at + ' (' + ago(d.age_s) + ', took ' +
             d.took_s + ' s)' + (d.scanning ? '; rescanning, ' + (d.progress || 0).toLocaleString() +
             ' files so far' : '') + (d.scan_error ? '; last scan failed: ' + d.scan_error : '');
         drive(d); areaTable(d); rejKpis(d); nightTable(d); cleanup(d);
+        if (!AUTO_RESCANNED && !d.scanning && d.age_s > AUTO_RESCAN_S) {
+            AUTO_RESCANNED = true;
+            info.textContent += '; older than 24 h, rescanning now';
+            load(true);
+            return;
+        }
     }
     clearTimeout(POLL);
     if (d.scanning) POLL = setTimeout(() => load(false), 5000);

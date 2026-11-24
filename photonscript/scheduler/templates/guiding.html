@@ -7,6 +7,7 @@
     <title>PhotonScript - Guiding</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
+    <script src="/static/js/fold.js?v={{ version }}"></script>
     <style>
         main { display: block; max-width: 1400px; }
         main > section.panel { margin-bottom: 1.5rem; scroll-margin-top: 1rem; }
@@ -43,6 +44,13 @@
         .g-navc { font-size: .72rem; margin-left: .2rem; }
         .g-nf { color: #fca5a5; font-weight: 700; }
         .g-nw { color: #fde047; font-weight: 700; }
+        /* UI tidy 2026-11-23: unguided status on top, PHD2 sections folded */
+        main > section.panel.g-folded { padding: .85rem 1.2rem; margin-bottom: .6rem; }
+        .trk-line { padding: .3rem 0; font-size: .9rem; border-bottom: 1px solid var(--border); }
+        .trk-line:last-child { border-bottom: 0; }
+        .trk-k { display: inline-block; min-width: 9.5rem; opacity: .65; font-size: .78rem;
+                 text-transform: uppercase; letter-spacing: .04em; }
+        .trk-line a { color: #7dd3fc; text-decoration: none; }
     </style>
 </head>
 <body>
@@ -66,8 +74,74 @@
             <a href="#tpointSec">TheSky / TPoint<span class="g-navc" data-navc="tpointSec"></span></a>
         </nav>
 
-        <section class="panel" id="guidedReady">
-            <h2>Guided night readiness (2026-10-26)</h2>
+        <!-- UI tidy 2026-11-23: how tonight tracks, first. Read only: GET
+             /api/arm (guiding mode, TPoint preflight), /api/thesky/audit
+             (counts) and /api/tracking/drift (the dashboard's Tracking drift
+             numbers). The PHD2 sections below start folded. -->
+        <section class="panel" id="trackSec">
+            <h2>Tracking now</h2>
+            <div id="trkMode" class="trk-line"><span class="trk-k">Mode</span>loading...</div>
+            <div id="trkTpoint" class="trk-line"><span class="trk-k">TPoint / ProTrack</span>loading...</div>
+            <div id="trkDrift" class="trk-line"><span class="trk-k">Tracking drift</span>loading...</div>
+            <div id="trkSub" class="trk-line"><span class="trk-k">Unguided sub</span>loading...</div>
+        </section>
+        <script>
+        (function () {
+            var esc = Fold.esc;
+            function set(id, html) { var el = document.getElementById(id); if (el) el.innerHTML = el.firstChild.outerHTML + html; }
+            function col(level) {
+                var lv = String(level || '').toLowerCase();
+                return lv === 'block' || lv === 'fail' ? '#f87171' : lv === 'warn' ? '#fbbf24' : lv === 'ok' ? '#4ade80' : '#cbd5e1';
+            }
+            function getJSON(u) { return fetch(u).then(function (r) { return r.json(); }).catch(function () { return null; }); }
+            Promise.all([getJSON('/api/arm'), getJSON('/api/thesky/audit'), getJSON('/api/tracking/drift?nights=7')]).then(function (r) {
+                var arm = r[0], aud = r[1], dr = r[2];
+                if (arm) {
+                    var g = String(arm.guiding || (arm.noon_arm || {}).guiding || '').toLowerCase();
+                    var mode = g === 'unguided' ? 'Unguided (TPoint + ProTrack)' : g ? 'Guided (PHD2)' : 'not armed';
+                    var gate = arm.dispatch_gate || {};
+                    set('trkMode', '<b>' + esc(mode) + '</b> <span class="g-dim">armer ' + esc(arm.state) +
+                        (arm.night_of ? ', night of ' + esc(arm.night_of) : '') + '</span>' +
+                        (gate.line ? ' <span class="g-dim">&middot; dispatch: ' + esc(gate.line) + '</span>' : '') +
+                        (g === 'unguided' ? ' <span class="g-dim">&middot; the PHD2 sections below matter only on a guided night</span>' : ''));
+                    var tp = arm.tpoint_preflight || {};
+                    var c = (aud && aud.counts) || {};
+                    set('trkTpoint', (tp.line ? '<span style="color:' + col(tp.level) + ';">' + esc(tp.line) + '</span>' : '<span class="g-dim">no preflight record</span>') +
+                        (tp.fix ? ' &middot; <b>Fix</b>: ' + esc(tp.fix) : '') +
+                        (aud ? ' <a href="#tpointSec">TheSky audit: ' + esc(c.fail || 0) + ' fail, ' + esc(c.warn || 0) + ' warn, ' +
+                               esc(c.unknown || 0) + ' unknown (' + esc(String(aud.t_utc || '').slice(0, 16)) + ')</a>' : ''));
+                } else {
+                    set('trkMode', '<span class="g-dim">armer status unavailable</span>');
+                    set('trkTpoint', '<span class="g-dim">unavailable</span>');
+                }
+                if (dr && dr.ok !== false) {
+                    var rows = ((dr.trend || {}).rows || []).filter(function (x) { return x.total_arcsec_min != null; });
+                    var last = rows[rows.length - 1];
+                    var bm = ((dr.trend || {}).by_model || []).slice(-1)[0];
+                    var parts = [];
+                    parts.push(dr.line ? esc(dr.line) : 'night of ' + esc(dr.date) + ': no clean guide-log window');
+                    if (last) parts.push('last measured ' + esc(last.date) + ': RA ' + esc(last.ra_arcsec_min) + ', Dec ' +
+                        esc(last.dec_arcsec_min) + ', total ' + esc(last.total_arcsec_min) + '"/min, RMS ' + esc(last.rms_arcsec) + '"');
+                    if (bm) parts.push('TPoint model ' + esc(bm.model_date || 'unknown') + ' (' + esc(bm.points) + ' pts): ' +
+                        esc(bm.total_arcsec_min) + '"/min over ' + esc(bm.nights) + ' night(s)');
+                    set('trkDrift', parts.join(' &middot; ') + ' <a href="/#driftPanel">dashboard</a>');
+                    var rec = dr.recommended || {};
+                    var rr = Object.keys(rec.rigs || {}).map(function (k) {
+                        var x = rec.rigs[k];
+                        return esc(x.rig) + ' ' + (x.exposure_s != null ? esc(x.exposure_s) + ' s' : '- (' + esc(x.why) + ')') + ', cap ' + esc(x.cap_s) + ' s';
+                    });
+                    set('trkSub', 'mode ' + esc(rec.mode) + ': ' + (rr.join('; ') || '-') +
+                        ' <a href="#ulSec">learned limits</a> &middot; <a href="/system#driftSubPanel">PS-169</a>');
+                } else {
+                    set('trkDrift', '<span class="g-dim">' + esc((dr && dr.note) || 'drift unavailable') + '</span>');
+                    set('trkSub', '<span class="g-dim">-</span>');
+                }
+            });
+        })();
+        </script>
+
+        <section class="panel g-folded" id="guidedReady">
+            <details class="fold" data-fold="g-ready" data-sum-from="grLine"><summary><h2>Guided night readiness (2026-10-26)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">Can tonight be a guided night (guided Ha at 300 to 900 s)? BLOCKER items stop a guided night (a trial night, guided_trial_night, goes guided anyway and lets the guiding test decide), in the order to fix them: a binning or exposure change invalidates the dark library and the calibration, so those come first. AUTO items PhotonScript fixes itself on the guided night (the PS-93 calibration slot). ADVICE should be fixed but does not stop a guided night. From the stored PHD2 audit, calibration record and self-test; Refresh re-runs the audit (reads PHD2 only). GET /api/guiding/readiness.</p>
             <div class="bd" id="grLine">loading...</div>
             <div id="grItems"></div>
@@ -76,10 +150,11 @@
                 <button class="btn btn-secondary" id="grRefresh">Refresh (run audit now)</button>
                 <span class="bd" id="grStatus"></span>
             </div>
+            </details>
         </section>
 
         <section class="panel" id="attention">
-            <h2>What to change (PS-119)</h2>
+            <details class="fold" data-fold="g-attn" data-sum-from="attnLine"><summary><h2>What to change (PS-119)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">Every fail, then every warn, from the stored PHD2 and TheSky / TPoint audits, the calibration record, the pulse self-test, the guide guard and the guide-star tuner; within each, what matters for tonight's guiding first. Built from cached records only (Refresh in a section re-runs that audit). Apply does a dry run first and asks before changing anything. A reading older than the last PHD2 settings change or 12 h is marked stale.</p>
             <div class="bd" id="attnLine">loading...</div>
             <div id="attnItems"></div>
@@ -89,20 +164,22 @@
                 <button class="btn btn-secondary" id="attnRefresh">Refresh</button>
                 <span class="bd" id="attnStatus"></span>
             </div>
+        </details>
         </section>
 
-        <section class="panel" id="liveSec">
-            <h2>Live PHD2</h2>
+        <section class="panel g-folded" id="liveSec">
+            <details class="fold" data-fold="g-live" data-sum-from="liveInfo"><summary><h2>Live PHD2</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <div class="bd" id="liveInfo">loading...</div>
             <div class="g-bar">
                 <button class="btn btn-secondary" id="liveRefresh">Refresh</button>
                 <span class="bd g-dim" id="liveStatus"></span>
             </div>
             <div class="g-dim" style="margin-top:.4rem;font-size:.75rem;">Refreshes every 15 s. RMS, SNR and HFD are the RC16 agent's PHD2 snapshot (arcsec when the guide pixel scale is known); app state, exposure, binning, scale and lock position are read from PHD2 itself (at most every 20 s).</div>
+            </details>
         </section>
 
-        <section class="panel" id="auditSec">
-            <h2>PHD2 Settings Audit (PS-89)</h2>
+        <section class="panel g-folded" id="auditSec">
+            <details class="fold" data-fold="g-audit" data-sum-from="auditInfo"><summary><h2>PHD2 Settings Audit (PS-89)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">PHD2, its stored profile, the newest guide log, NINA's guider settings, the mount driver, TheSky and the PHD2 dark library against config/phd2/desired_oag_rc16.toml. Runs at every guided arm (one push only on a FAIL) and 60 s after a PHD2 configuration change. Apply does a dry run first and asks before changing anything: API rows (exposure, RA min-move, Dec guide mode) only while PHD2 is Stopped or Looping; profile rows need PS_PHD2_AUDIT_AUTOFIX, PHD2 closed and the armer idle; mount driver, TheSky and NINA rows are report only. Unknown = no source could read it.</p>
             <div class="bd" id="auditInfo">loading...</div>
             <div class="g-bar">
@@ -110,10 +187,11 @@
                 <span class="bd" id="auditStatus"></span>
             </div>
             <div id="auditRows" style="margin-top:.4rem;"></div>
+            </details>
         </section>
 
-        <section class="panel" id="selftestSec">
-            <h2>PHD2 Pulse Self-Test (PS-92)</h2>
+        <section class="panel g-folded" id="selftestSec">
+            <details class="fold" data-fold="g-selftest" data-sum-from="stLast"><summary><h2>PHD2 Pulse Self-Test (PS-92)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">Does the mount move on a guide pulse? PHD2 loops while PhotonScript pulses W, E, N, S (3 each) and measures how far the star field moved against the guide speed. PASS: every direction 0.5 to 1.5x of expected and opposite pairs oppose; WARN above 1.5x (guide-rate mismatch); FAIL under 0.5x or not opposing. With PS_PHD2_SELFTEST_ENABLED on, NINA runs it after the twilight autofocus and before each guided target. Run it by hand only with the scope tracking on a star field and PHD2 not guiding.</p>
             <div class="bd" id="stLast">loading...</div>
             <div class="g-bar">
@@ -122,10 +200,11 @@
                 <span class="bd" id="stStatus"></span>
             </div>
             <div id="stTrend"></div>
+            </details>
         </section>
 
-        <section class="panel" id="calSec">
-            <h2>PHD2 Calibration (PS-93)</h2>
+        <section class="panel g-folded" id="calSec">
+            <details class="fold" data-fold="g-cal" data-sum-from="pcInfo"><summary><h2>PHD2 Calibration (PS-93)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">The calibration PHD2 uses now, graded. PASS: axes within 5 deg of perpendicular, RA/Dec rate ratio within 30% of cos(Dec), 8 or more steps per axis, taken near Dec 0 and the meridian. FAIL: failed, no motion, ortho over 5 deg, ratio off, parity changed. With PS_PHD2_CAL_MODE=auto a guided night calibrates (NINA slot PHD2_CALIBRATION after the twilight autofocus) only when this is missing, FAILED, older than PS_PHD2_CAL_MAX_AGE_DAYS, the PHD2 profile or binning changed, or you ask for it below.</p>
             <div class="bd" id="pcInfo">loading...</div>
             <div class="g-bar">
@@ -135,10 +214,11 @@
                 <span class="bd" id="pcStatus"></span>
             </div>
             <div id="pcHist"></div>
+            </details>
         </section>
 
-        <section class="panel" id="guardSec">
-            <h2>PHD2 Guide Guard (PS-91)</h2>
+        <section class="panel g-folded" id="guardSec">
+            <details class="fold" data-fold="g-guard" data-sum-from="guardInfo"><summary><h2>PHD2 Guide Guard (PS-91)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">Watches PHD2 live for a lock on a hot pixel or other non-star, PHD2 guiding a parked or closed-roof scope, and max-length pulses that move nothing. Subs guided on a non-star are marked guide_lock WARN. The hot-pixel map is rebuilt automatically while the roof is closed before dusk; build it by hand only with the roof closed or the guide camera capped. Capture is refused while a night runs, while PHD2 guides, or while another PHD2 job holds it.</p>
             <div class="bd" id="guardInfo">loading...</div>
             <div class="g-bar">
@@ -147,26 +227,29 @@
                 <span class="bd" id="guardStatus"></span>
             </div>
             <div id="guardOut" style="margin-top:.6rem;"></div>
+            </details>
         </section>
 
-        <section class="panel" id="tuneSec">
-            <h2>Guide Star Tuner (PS-90)</h2>
+        <section class="panel g-folded" id="tuneSec">
+            <details class="fold" data-fold="g-tune" data-sum-from="tuneInfo"><summary><h2>Guide Star Tuner (PS-90)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">The RC16 agent measures the guide star after each settle and on a filter change (get_star_image plus PHD2's SNR, HFD and ErrorCode). Target: peak 60 to 80% of full scale, never clipped, SNR over 20, HFD 2 to 5 px, exposure 1 to 4 s. Mode observe records only; exposure steps PHD2's exposure (only to exposures the dark library has). Gain and binning are recommended for the next night and written pre-dusk only with PS_PHD2_AUDIT_AUTOFIX.</p>
             <div class="bd" id="tuneInfo">loading...</div>
             <div class="g-bar">
                 <button class="btn btn-secondary" id="tuneRefresh">Refresh</button>
             </div>
             <div id="tuneRows"></div>
+            </details>
         </section>
 
-        <section class="panel" id="blockSec">
-            <h2>Per-block guiding (PS-85)</h2>
+        <section class="panel g-folded" id="blockSec">
+            <details class="fold" data-fold="g-block" data-sum-from="blockInfo"><summary><h2>Per-block guiding (PS-85)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">The RC16 guide camera looks through the filter wheel, so a 3 nm block may show it no real star. At the start of each guided block the RC16 agent reads PHD2's next guide frames and its star image: viable = SNR at or over the minimum, HFD in band, a star-like profile, few lost frames. A block without a real star runs unguided (TPoint + ProTrack) at the sub length below; while guiding, SNR under the minimum with a non-star profile for N frames (guard D6) does the same. Mode observe records and pushes once per target only; auto stops guiding and re-dispatches the rest with that block unguided (no dithers on those blocks).</p>
             <div class="bd" id="blockInfo">loading...</div>
             <div class="g-bar">
                 <button class="btn btn-secondary" id="blockRefresh">Refresh</button>
             </div>
             <div id="blockRows"></div>
+            </details>
         </section>
 
         <section class="panel" id="ulSec">
@@ -179,18 +262,19 @@
             <div id="ulRows"></div>
         </section>
 
-        <section class="panel" id="glogSec">
-            <h2>Tonight's Guide Log (PS-88)</h2>
+        <section class="panel g-folded" id="glogSec">
+            <details class="fold" data-fold="g-glog" data-sum-from="glogInfo"><summary><h2>Tonight's Guide Log (PS-88)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <p class="g-intro">The night's PHD2 guide log analysed: RMS (all and settled), dropped and saturated frames, dithers, and the top findings with a fix each. Read on load and on Refresh only (it parses the whole log).</p>
             <div class="bd" id="glogInfo" data-night="{{ night }}">loading...</div>
             <div class="g-bar">
                 <button class="btn btn-secondary" id="glogRefresh">Refresh</button>
             </div>
             <div id="glogFindings"></div>
+            </details>
         </section>
 
         <section class="panel" id="tpointSec">
-            <h2>TheSky / TPoint Audit (PS-104)</h2>
+            <details class="fold" data-fold="g-tpoint" data-sum-from="tsInfo"><summary><h2>TheSky / TPoint Audit (PS-104)</h2><span class="fold-dot"></span><span class="fold-sum"></span></summary>
             <div class="bd" id="tsWatch" title="TPoint run watcher: reads TPoint's files only (GET /api/thesky/tpoint/watch); history: GET /api/thesky/tpoint/history">TPoint: loading...</div>
             <div class="bd" id="tsCoverage" title="TPoint coverage: where the model has samples, by HA band (east of the meridian before the flip, west after it) and Dec band. Empty / thin cells = the pointing model extrapolates there. Full table and top-up: photonscript tpoint-stats or GET /api/thesky/tpoint"></div>
             <p class="g-intro">Report only: TheSky's settings (read through its TCP scripting with read-only scripts), the ASTAP Image Link check on the newest RC16 L frame, NINA's first-slew error from its Center log, and the TPoint record you enter below, against config/thesky/desired_rc16.toml. Nothing here writes TheSky, moves the mount or takes an image. Runs at arm and on Refresh. TPoint numbers, ProTrack, catalogs and the run binning are not in TheSky's scripting API: enter them after each TPoint session. Unknown = no source could read it.</p>
@@ -238,6 +322,7 @@
                     <span class="bd" id="tsManualStatus"></span>
                 </div>
             </form>
+        </details>
         </section>
     </main>
 
@@ -247,6 +332,43 @@
     <script src="/static/js/unguided_limits_panel.js?v={{ version }}"></script>
     <script src="/static/js/guided_readiness_panel.js?v={{ version }}"></script>
     <script>PHD2.initGuidingPage(); THESKY.init(); PIGGYOFFSET.init(); UNGUIDEDLIMITS.init(); GUIDEDREADY.init();</script>
+    <script>
+    // UI tidy 2026-11-23: each folded PHD2 section shows the first line its
+    // panel writes (data-sum-from) and a dot from the badges in it. These
+    // never auto-open: they start folded, a click is remembered.
+    (function () {
+        document.querySelectorAll('details.fold[data-sum-from]').forEach(function (d) {
+            var src = document.getElementById(d.getAttribute('data-sum-from'));
+            if (!src) return;
+            function upd() {
+                // the first line: text up to the first block element
+                var t = '';
+                for (var i = 0; i < src.childNodes.length; i++) {
+                    var n = src.childNodes[i];
+                    var block = n.nodeType === 1 && /^(DIV|P|TABLE|UL|OL|BR|H3|H4|DETAILS)$/.test(n.tagName);
+                    if (block && t.trim()) break;
+                    // every text piece with a space between (label / value
+                    // cells must not run together: "statenot reachable")
+                    if (n.nodeType === 1) {
+                        var w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT), x, parts = [];
+                        while ((x = w.nextNode())) { var v = x.textContent.trim(); if (v) parts.push(v); }
+                        t += ' ' + parts.join(' ');
+                    } else {
+                        t += n.textContent || '';
+                    }
+                    if (block) break;
+                }
+                t = t.replace(/\s+/g, ' ').trim();
+                if (t.length > 220) t = t.slice(0, 217) + '...';
+                var lv = src.querySelector('.badge-fail') ? 'fail' : src.querySelector('.badge-warn') ? 'warn'
+                    : src.querySelector('.badge-pass') ? 'ok' : '';
+                Fold.status(d, lv, t, {noOpen: true});
+            }
+            new MutationObserver(upd).observe(src, {childList: true, subtree: true, characterData: true});
+            upd();
+        });
+    })();
+    </script>
     {% include "_footer.html" %}
 </body>
 </html>
