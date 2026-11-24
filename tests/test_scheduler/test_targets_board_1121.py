@@ -297,10 +297,10 @@ def test_targets_page_sections_and_no_empty_thumbnail(client):
     html = c.get("/targets").text
     assert "/api/targets/tonight" in html
     assert "['test', 'Tests'" in html and "LS_KEY" in html
-    # Tests collapsed by default, Done open
+    # Tests and Done collapsed by default (UI tidy 2026-11-23: Done starts folded)
     assert "'tracking / optics tests, TPoint, calibration, unattributed', false" \
         in html
-    assert "['done', 'Done', 'goal met, or imaged with no goal', true]" in html
+    assert "['done', 'Done', 'goal met, or imaged with no goal', false]" in html
     # the thumbnail block only shows once an image loaded
     assert ".tcard .pic { display:none;" in html and ".tcard .pic.has" in html
     assert "localStorage" in html and "catch (e)" in html
