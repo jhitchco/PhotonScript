@@ -1398,6 +1398,15 @@ class PhotonScriptConfig(BaseSettings):
                                  # (min 3: never within a few subs of an AF)
     rc16_af_interval_min: float = 60.0  # smart: AF at least this often
                                  # (min; 0 = no timed AF)
+    # 2026-11-25: the RC16 spent 125 min autofocusing vs 83 min exposing.
+    # A short window scaled Elephant Trunk's owed Ha 22 / OIII 20 / SII 31 to
+    # Ha x1, OIII x1, SII x2 per pass, so every sub was its own filter block
+    # (AF + filter switch under every_block). After the planner scales a
+    # filter group, a filter left under this many subs per pass (that does
+    # not finish its goal tonight) drops the smallest share for tonight and
+    # the rest rescale into the whole budget (it stays owed for later
+    # nights). 1 = off (uniform scaling, floor 1 sub).
+    rc16_min_block_subs: int = 1
     # Re-entry gates (2026-10-15, scheduler/reentry.py): ExternalScript
     # gates in every RC16 target container that skip the start AF when the
     # last AF on NINA #1 finished under reentry_af_skip_min ago, the focuser

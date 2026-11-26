@@ -69,19 +69,74 @@ _NB_FILTERS = {"Ha", "OIII", "SII"}
 BB_SHARE_DARK = 0.5
 
 
-def _scale_group(group, budget_s):
+def _scale_group(group, budget_s, min_block: int = 1, done=None):
     """Scale a filter group's long counts down to fit budget_s. Returns
     seconds used. PS-112: a plan whose long set is done (count 0, only HDR
     shorts owed) stays at 0; the max(1, ...) floor is only for a set that
-    still owes subs."""
+    still owes subs. min_block > 1 (config rc16_min_block_subs): see
+    _apply_min_block; done = {filter: share of its goal already done}."""
     total = sum(e.exposure_seconds * e.count for e in group)
     if total <= budget_s or total == 0:
         return total
+    owed = {id(e): e.count for e in group}
     scale = budget_s / total
     for e in group:
         if e.count > 0:
             e.count = max(1, int(e.count * scale))
+    if min_block > 1:
+        _apply_min_block(group, budget_s, int(min_block), owed, done or {})
     return sum(e.exposure_seconds * e.count for e in group)
+
+
+def _apply_min_block(group, budget_s, n: int, owed: dict, done: dict):
+    """2026-11-25 (rc16_min_block_subs): every filter block costs an AF and a
+    filter switch, so a uniform scale-down that leaves a filter 1-2 subs per
+    pass spends the window focusing (Elephant Trunk Ha x1, OIII x1, SII x2:
+    125 min of AF vs 83 min of exposure). While an RC16 filter that owes
+    more than it got is under n subs, drop the filter with the smallest
+    scaled share (ties: the most of its goal done, then the later filter)
+    to count 0 for tonight (it stays owed; later nights pick it up) and
+    rescale the rest from what they owe into the whole budget. A filter
+    that gets all it owes is never short. One filter always remains (floor
+    1 sub). owed = {id(e): count before the scale-down}."""
+    order = {id(e): i for i, e in enumerate(group)}
+    dropped = set()
+    while True:
+        live = [e for e in group if e.count > 0 and id(e) not in dropped
+                and (getattr(e, "rig", "rc16") or "rc16") == "rc16"]
+        partial = [e for e in live if e.count < owed[id(e)]]
+        if len(live) <= 1 or not any(e.count < n for e in partial):
+            return
+        victim = min(partial, key=lambda e: (
+            e.exposure_seconds * e.count,
+            -float(done.get(e.filter_type.value, 0.0) or 0.0),
+            -order[id(e)]))
+        victim.count = 0
+        dropped.add(id(victim))
+        keep = [e for e in group if id(e) not in dropped and owed[id(e)] > 0]
+        total = sum(e.exposure_seconds * owed[id(e)] for e in keep)
+        scale = min(1.0, budget_s / total) if total else 1.0
+        for e in keep:
+            e.count = max(1, int(owed[id(e)] * scale))
+
+
+def min_block_rule(proj, config):
+    """(rc16_min_block_subs, {filter: share of its RC16 goal done}) for a
+    goal, or None when the rule is off (1, the default)."""
+    try:
+        n = int(getattr(config, "rc16_min_block_subs", 1) or 1)
+    except (TypeError, ValueError):
+        n = 1
+    if n <= 1:
+        return None
+    done = {}
+    for p in getattr(proj, "exposure_plans", None) or []:
+        if (getattr(p, "rig", "rc16") or "rc16") != "rc16":
+            continue
+        goal_s = float(p.exposure_seconds or 0) * float(p.count or 0)
+        done[p.filter_type.value] = (p.long_seconds_done() / goal_s
+                                     if goal_s > 0 else 1.0)
+    return n, done
 
 
 def owed_seconds(e) -> float:
@@ -91,7 +146,7 @@ def owed_seconds(e) -> float:
             + (e.hdr_short_seconds or 0) * e.short_remaining())
 
 
-def _fit_by_moon(exposures, available_seconds, moon_tag):
+def _fit_by_moon(exposures, available_seconds, moon_tag, block=None):
     """Fit a target's remaining exposures into tonight's time, weighting
     broadband vs narrowband by the night's moon tag (from scheduler/moon.py):
 
@@ -103,24 +158,26 @@ def _fit_by_moon(exposures, available_seconds, moon_tag):
       None       moon-aware off  -> legacy uniform scale-down
 
     Returns the exposures to shoot tonight (order is cosmetic; the sequence
-    generator re-sorts broadband-first by the live moon window).
+    generator re-sorts broadband-first by the live moon window). block:
+    min_block_rule's (n, done), None = off.
     """
+    n, done = block or (1, None)
     bb = [e for e in exposures if e.filter_type.value not in _NB_FILTERS]
     nb = [e for e in exposures if e.filter_type.value in _NB_FILTERS]
 
     if moon_tag == "NB":
-        _scale_group(nb, available_seconds)
+        _scale_group(nb, available_seconds, n, done)
         return nb
     if moon_tag == "BB":
-        bb_used = _scale_group(bb, available_seconds * BB_SHARE_DARK)
-        _scale_group(nb, max(0.0, available_seconds - bb_used))
+        bb_used = _scale_group(bb, available_seconds * BB_SHARE_DARK, n, done)
+        _scale_group(nb, max(0.0, available_seconds - bb_used), n, done)
         return bb + nb
     if moon_tag == "NB+OIII":
-        nb_used = _scale_group(nb, available_seconds)
-        _scale_group(bb, max(0.0, available_seconds - nb_used))
+        nb_used = _scale_group(nb, available_seconds, n, done)
+        _scale_group(bb, max(0.0, available_seconds - nb_used), n, done)
         return nb + bb
     # moon-aware disabled / unknown tag: preserve the legacy uniform behavior
-    _scale_group(exposures, available_seconds)
+    _scale_group(exposures, available_seconds, n, done)
     return exposures
 
 
@@ -160,23 +217,24 @@ def ha_first_seconds(proj, config) -> float:
 
 
 def _fit_ha_first(exposures, available_seconds, moon_tag, ha_done_s: float,
-                  min_s: float):
+                  min_s: float, block=None):
     """Ha first: tonight's time goes to RC16 Ha until the goal would hold
     min_s accepted Ha seconds, then what is left is shared by the usual moon
     rule (_fit_by_moon: the remaining counts, i.e. the mix). Ha is listed
     first, so the sequence shoots it first. Without an Ha deficit this is
     _fit_by_moon unchanged."""
     import math
+    kw = {} if block is None else {"block": block}
     ha = next((e for e in exposures if e.filter_type.value == "Ha"
                and e.count > 0), None)
     deficit = min_s - ha_done_s
     if ha is None or deficit <= 0 or not ha.exposure_seconds:
-        return _fit_by_moon(exposures, available_seconds, moon_tag)
+        return _fit_by_moon(exposures, available_seconds, moon_tag, **kw)
     exp = float(ha.exposure_seconds)
     reserve = min(ha.count, math.ceil(deficit / exp - 1e-9),
                   int(available_seconds // exp))
     if reserve <= 0:
-        return _fit_by_moon(exposures, available_seconds, moon_tag)
+        return _fit_by_moon(exposures, available_seconds, moon_tag, **kw)
     left = available_seconds - reserve * exp
     rest = []
     for e in exposures:
@@ -188,7 +246,7 @@ def _fit_ha_first(exposures, available_seconds, moon_tag, ha_done_s: float,
     shortest = min((float(e.exposure_seconds) for e in rest
                     if e.exposure_seconds), default=0.0)
     # the reserve can take the whole night: then nothing else is planned
-    fitted = (_fit_by_moon(rest, left, moon_tag)
+    fitted = (_fit_by_moon(rest, left, moon_tag, **kw)
               if rest and shortest and left >= shortest else [])
     extra = next((e for e in fitted if e.filter_type.value == "Ha"), None)
     out_ha = ha.model_copy(update={
@@ -411,7 +469,8 @@ def allocate_windows(entries: list[dict], start: datetime, end: datetime,
 def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
                    prio_by_name: dict, config, dark_start: datetime,
                    dark_end: datetime, now: datetime, moon: dict | None,
-                   ha_first_by_name: dict | None = None):
+                   ha_first_by_name: dict | None = None,
+                   block_by_name: dict | None = None):
     """PS-180: allocate_windows over tonight's ordered targets, put the
     windows on them, drop the targets that get none, and fit each target's
     per-pass counts into its window (filter balance: every filter of a pass
@@ -427,7 +486,8 @@ def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
     entries = _window_entries(sequence_targets, vis_by_name, need_by_name,
                               prio_by_name, dark_end, moon)
     alloc = allocate_windows(entries, start, dark_end, _min_window_s(config))
-    return _put_windows(sequence_targets, alloc, ha_first_by_name)
+    return _put_windows(sequence_targets, alloc, ha_first_by_name,
+                        block_by_name)
 
 
 def _min_window_s(config) -> float:
@@ -468,10 +528,12 @@ def _window_entries(sequence_targets, vis_by_name: dict, need_by_name: dict,
 
 
 def _put_windows(sequence_targets, alloc: dict,
-                 ha_first_by_name: dict | None = None):
+                 ha_first_by_name: dict | None = None,
+                 block_by_name: dict | None = None):
     """Put allocate_windows' windows on the targets (in list order), drop
     the ones without a window, fit each target's per-pass counts into its
-    window. Returns the kept targets."""
+    window. Returns the kept targets. block_by_name: name ->
+    min_block_rule's (n, done) for the goals with the rule on."""
     kept = []
     for t in sequence_targets:
         win = alloc["windows"].get(t.name)
@@ -489,15 +551,18 @@ def _put_windows(sequence_targets, alloc: dict,
             # handoff still bounds it
             longs = [e for e in t.exposures if e.count - e.acquired > 0]
             hf = (ha_first_by_name or {}).get(t.name)
+            block = (block_by_name or {}).get(t.name)
+            kw = {} if block is None else {"block": block}
             if hf:
                 # Ha first holds inside the window too: the Ha reserve
                 # first, the rest of the pass scaled into what is left
                 done_s, min_s = hf
                 t.exposures = (_fit_ha_first(longs, span_s * 0.85, None,
-                                             done_s, min_s)
+                                             done_s, min_s, **kw)
                                + [e for e in t.exposures if e not in longs])
             else:
-                _scale_group(longs, span_s * 0.85)
+                n, done = block or (1, None)
+                _scale_group(longs, span_s * 0.85, n, done)
         kept.append(t)
     logger.info("Target windows: %s%s", "; ".join(
         f"{t.name} {t.window_start_utc:%H:%M}-{t.window_end_utc:%H:%M}Z"
@@ -568,7 +633,8 @@ def _apply_deep_windows(sequence_targets, pick: str, vis_by_name: dict,
                         need_by_name: dict, prio_by_name: dict, config,
                         dark_start: datetime, dark_end: datetime,
                         now: datetime, moon: dict | None,
-                        ha_first_by_name: dict | None = None):
+                        ha_first_by_name: dict | None = None,
+                        block_by_name: dict | None = None):
     """allocate_deep over tonight's targets: (kept targets in window order,
     the allocation), or (None, None) when the pick gets no window (the
     caller plans split)."""
@@ -581,7 +647,8 @@ def _apply_deep_windows(sequence_targets, pick: str, vis_by_name: dict,
     ordered = sorted((t for t in sequence_targets if t.name in alloc["windows"]),
                      key=lambda t: alloc["windows"][t.name][0])
     ordered += [t for t in sequence_targets if t.name not in alloc["windows"]]
-    return _put_windows(ordered, alloc, ha_first_by_name), alloc
+    return _put_windows(ordered, alloc, ha_first_by_name,
+                        block_by_name), alloc
 
 
 GAP_FILL_MIN_S = 600.0   # an RC16 gap (or a fill window) shorter is left alone
@@ -593,7 +660,8 @@ def _utc_iso(t: datetime) -> str:
 
 def gap_fill(sequence_targets, visible_projects, consider, *, start: datetime,
              end: datetime, moon: dict | None, promoted: bool,
-             ha_first_by_name: dict, skipped: dict, info: dict) -> list:
+             ha_first_by_name: dict, skipped: dict, info: dict,
+             block_by_name: dict | None = None) -> list:
     """2026-11-21: fill every RC16 gap after the window allocation.
 
     The priority walk books tonight as one pool of hours, but the targets'
@@ -680,7 +748,7 @@ def gap_fill(sequence_targets, visible_projects, consider, *, start: datetime,
         proj = vp["project"]
         used.add(t.name)
         _put_windows([t], {"windows": {t.name: (w0, w1)}, "handoff": {},
-                           "fill": None}, ha_first_by_name)
+                           "fill": None}, ha_first_by_name, block_by_name)
         fills.append(t)
         row.update(target=t.name, kind="goal",
                    project_id=getattr(proj, "id", None),
@@ -1258,6 +1326,7 @@ def plan_night_sequence(
     # PS-180: per target, for the window allocation
     vis_by_name, need_by_name, prio_by_name = {}, {}, {}
     ha_first_by_name = {}   # name -> (Ha seconds done, Ha first seconds)
+    block_by_name = {}      # name -> min_block_rule (rc16_min_block_subs > 1)
     skipped: dict = {}      # moon fill: goal -> why it has nothing tonight
 
     def _consider(vp, vis_hours, bb_cap):
@@ -1339,6 +1408,11 @@ def plan_night_sequence(
         # mixed target keeps the night's "NB" (narrowband only), else its
         # broadband fills the leftover under the moon (M33 Core LRGB at 85%)
         tag = fit_tag if bb_only else moon_tag
+        block = min_block_rule(proj, config)
+        # rule off (rc16_min_block_subs 1): the fit calls are today's
+        block_kw = {} if block is None else {"block": block}
+        if block is not None:
+            block_by_name[proj.target.name] = block
         ha_min_s = 0.0 if nb_off else ha_first_seconds(proj, config)
         if ha_min_s > 0:
             # Ha first (two-rig NB blend): RC16 Ha until the goal holds
@@ -1348,12 +1422,12 @@ def plan_night_sequence(
                          else 0.0)
             remaining_exposures = _fit_ha_first(
                 remaining_exposures, available_seconds, tag,
-                ha_done_s, ha_min_s)
+                ha_done_s, ha_min_s, **block_kw)
             if ha_done_s < ha_min_s:
                 ha_first_by_name[proj.target.name] = (ha_done_s, ha_min_s)
         else:
             remaining_exposures = _fit_by_moon(
-                remaining_exposures, available_seconds, tag)
+                remaining_exposures, available_seconds, tag, **block_kw)
         if not remaining_exposures:
             # e.g. a broadband-only target on a bright-moon night -> skip tonight
             skipped[proj.target.name] = "broadband deferred by the moon"
@@ -1473,7 +1547,7 @@ def plan_night_sequence(
             kept, deep_alloc = _apply_deep_windows(
                 sequence_targets, pick["target"], vis_by_name, need_by_name,
                 prio_by_name, config, dark_start, dark_end, date_utc, moon,
-                ha_first_by_name)
+                ha_first_by_name, block_by_name)
             if deep_alloc is None:
                 info["deep_note"] = (f"{pick['target']} gets less than the "
                                      "minimum window tonight: split")
@@ -1493,7 +1567,8 @@ def plan_night_sequence(
         if deep_alloc is None and bool(getattr(config, "plan_target_windows", True)):
             sequence_targets = _apply_windows(
                 sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
-                dark_start, dark_end, date_utc, moon, ha_first_by_name)
+                dark_start, dark_end, date_utc, moon, ha_first_by_name,
+                block_by_name)
 
     # 2026-11-21 gap fill: the priority walk books the night as one pool of
     # hours, so goals that set early can use it up while the RC16 then idles
@@ -1508,7 +1583,8 @@ def plan_night_sequence(
             sequence_targets, visible_projects, _consider,
             start=max(dark_start, date_utc), end=dark_end,
             moon=moon, promoted=bb_cap_s is not None,
-            ha_first_by_name=ha_first_by_name, skipped=skipped, info=info)
+            ha_first_by_name=ha_first_by_name, skipped=skipped, info=info,
+            block_by_name=block_by_name)
 
     # 2026-10-25 moon fill: a bright-moon night that left the RC16 (and so
     # the Piggy-600 on the same mount) with nothing gets a Piggy-driven
