@@ -1398,6 +1398,10 @@ class PhotonScriptConfig(BaseSettings):
                                  # (min 3: never within a few subs of an AF)
     rc16_af_interval_min: float = 60.0  # smart: AF at least this often
                                  # (min; 0 = no timed AF)
+    rc16_af_min_offset_afs: int = 3  # smart: AF runs (focus model n) in a
+                                 # filter and in the AF filter before its
+                                 # model offset counts as measured (no AF at
+                                 # its blocks; af_policy.MIN_OFFSET_AFS, min 1)
     # 2026-11-25: the RC16 spent 125 min autofocusing vs 83 min exposing.
     # A short window scaled Elephant Trunk's owed Ha 22 / OIII 20 / SII 31 to
     # Ha x1, OIII x1, SII x2 per pass, so every sub was its own filter block
