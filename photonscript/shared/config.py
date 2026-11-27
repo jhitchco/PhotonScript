@@ -1312,6 +1312,13 @@ class PhotonScriptConfig(BaseSettings):
                                  # L,Ha,L,OIII,L,SII,L on a rich field, about
                                  # 25-30 min) before tonight's targets; the key
                                  # turns itself off after that dispatch.
+    focus_calibration_filters: str = ""  # PS-144: AF filter order for
+                                 # focus_calibration_tonight, comma-separated
+                                 # (e.g. L,OIII,L,SII,L,OIII,L,SII,L to add
+                                 # OIII/SII pairs). Empty = L,Ha,L,OIII,L,SII,L.
+                                 # Each NB AF should sit between two L AFs (the
+                                 # pair offsets need the bracket). Capped at
+                                 # FOCUS_CAL_MAX_AFS runs; unknown names skipped.
     nina_autofocus_reports_dir: str = ""  # path to NINA's AutoFocus report *.json
                                  # folder (e.g. %LOCALAPPDATA%/NINA/AutoFocus). Set
                                  # it to enable the post-night AF-quality alert

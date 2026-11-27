@@ -186,6 +186,31 @@ FOCUS_CAL_FIELDS = (("NGC 7789", 23.957, 56.72), ("M52", 23.405, 61.59),
                     ("M35", 6.151, 24.33), ("M67", 8.856, 11.81),
                     ("M11", 18.851, -6.27))
 FOCUS_CAL_FILTERS = ("L", "Ha", "L", "OIII", "L", "SII", "L")
+FOCUS_CAL_MAX_AFS = 10   # cap on AF runs in one calibration (Jeremy 2026-11-27)
+_FOCUS_CAL_NAMES = {"l": "L", "lum": "L", "luminance": "L", "ha": "Ha",
+                    "h": "Ha", "oiii": "OIII", "o": "OIII", "sii": "SII",
+                    "s": "SII", "r": "R", "g": "G", "b": "B"}
+
+
+def focus_cal_filters(raw: str) -> list:
+    """The calibration AF order from focus_calibration_filters: known names
+    only (case-insensitive), starting and ending on L, at most
+    FOCUS_CAL_MAX_AFS runs. Empty or nothing usable = FOCUS_CAL_FILTERS."""
+    names = [_FOCUS_CAL_NAMES[n.strip().lower()]
+             for n in str(raw or "").split(",")
+             if n.strip().lower() in _FOCUS_CAL_NAMES]
+    if not any(n != "L" for n in names):
+        return list(FOCUS_CAL_FILTERS)
+    if names[0] != "L":
+        names.insert(0, "L")
+    if names[-1] != "L":
+        names.append("L")
+    if len(names) > FOCUS_CAL_MAX_AFS:
+        names = names[:FOCUS_CAL_MAX_AFS - 1]
+        if names[-1] == "L":
+            names = names[:-1]
+        names.append("L")
+    return names
 FOCUS_CAL_ALT_LO, FOCUS_CAL_ALT_HI = 40.0, 70.0
 
 
@@ -2860,7 +2885,8 @@ class Armer:
                 name=f"{FOCUS_CAL_PREFIX}{name}", ra_hours=ra,
                 dec_degrees=dec, focus_calibration=True,
                 focus_calibration_rounds=1,
-                focus_calibration_filters=list(FOCUS_CAL_FILTERS))
+                focus_calibration_filters=focus_cal_filters(getattr(
+                    self.config, "focus_calibration_filters", "")))
         except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
             logger.warning("focus calibration skipped: %s", e)
             self._focus_cal_field = None

@@ -362,3 +362,39 @@ def test_summary_and_attention_show_the_offset_check(tmp_path, monkeypatch):
     fo = [i for i in items if i.get("id") == "focus_offset_Ha"]
     assert len(fo) == 1 and fo[0]["severity"] == "warn"
     assert "-187" in fo[0]["current"] and "+123" in fo[0]["desired"]
+
+
+# ---- configurable calibration order (focus_calibration_filters) ----------------
+
+def test_focus_cal_filters_default_and_parse():
+    f = armer_mod.focus_cal_filters
+    assert f("") == list(armer_mod.FOCUS_CAL_FILTERS)
+    assert f("L,L") == list(armer_mod.FOCUS_CAL_FILTERS)      # nothing to measure
+    assert f(" l, oiii ,L,sii,L ") == ["L", "OIII", "L", "SII", "L"]
+    assert f("OIII,L,SII") == ["L", "OIII", "L", "SII", "L"]  # bracketed by L
+    assert f("L,foo,OIII,L") == ["L", "OIII", "L"]            # unknown skipped
+
+
+def test_focus_cal_filters_capped_at_max_afs():
+    f = armer_mod.focus_cal_filters
+    tonight = f("L,OIII,L,SII,L,OIII,L,SII,L")
+    assert tonight == ["L", "OIII", "L", "SII", "L", "OIII", "L", "SII", "L"]
+    long = f(",".join(["L", "OIII", "L", "SII"] * 5 + ["L"]))
+    assert len(long) <= armer_mod.FOCUS_CAL_MAX_AFS
+    assert long[0] == "L" and long[-1] == "L"
+
+
+def test_system_page_has_the_filters_field():
+    from photonscript.scheduler.app import _CONFIG_FIELDS
+    by_env = {f[1]: f for f in _CONFIG_FIELDS}
+    c = by_env["PS_FOCUS_CALIBRATION_FILTERS"]
+    assert c[0] == "focus_calibration_filters" and c[4] == "str"
+
+
+def test_dispatch_uses_the_configured_order(tmp_path, monkeypatch):
+    a = _armer(tmp_path, monkeypatch, focus_calibration_tonight=True,
+               focus_calibration_filters="L,OIII,L,SII,L,OIII,L,SII,L")
+    assert a._dispatch() is True, a.detail
+    seq = json.loads(a.sequence_path.read_text(encoding="utf-8"))
+    # L acquisition AF, then 8 more: 9 AF runs, OIII and SII twice each
+    assert _af_filters(seq) == ["O", "L", "S", "L", "O", "L", "S", "L"]

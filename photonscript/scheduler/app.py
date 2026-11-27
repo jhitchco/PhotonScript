@@ -1229,6 +1229,7 @@ _CONFIG_FIELDS = [
     ("focus_filter_offsets", "PS_FOCUS_FILTER_OFFSETS", "Focus offsets from L per filter (EAF steps, e.g. Ha:120,OIII:120,SII:120; PS-144)", "Imaging", "str", False, False),
     ("focus_harvest_max_hfr_arcsec", "PS_FOCUS_HARVEST_MAX_HFR_ARCSEC", "Focus-seed harvest (RC16): max sub HFR in arcsec (HFR px x pixel scale)", "Imaging", "float", False, False),
     ("focus_calibration_tonight", "PS_FOCUS_CALIBRATION_TONIGHT", "Run a focus-offset calibration at the start of tonight (one-shot: turns itself off after the dispatch; PS-144)", "Imaging", "bool", False, False),
+    ("focus_calibration_filters", "PS_FOCUS_CALIBRATION_FILTERS", "Focus calibration AF order (comma-separated, NB filters bracketed by L, max 10 AF runs; empty = L,Ha,L,OIII,L,SII,L)", "Imaging", "str", False, False),
     ("focus_model_move_script", "PS_FOCUS_MODEL_MOVE_SCRIPT", "Focus model drive: NINA ExternalScript for the table move (deploy\\focus-model-move.cmd)", "Imaging", "str", False, False),
     ("rc16_af_policy", "PS_RC16_AF_POLICY", "RC16 autofocus policy (PS-176): every_block (AF at every filter block) | smart (measured filter offsets as focuser moves; AF at target start, on temperature / HFR / timed triggers and for filters with no measured offset)", "Imaging", "str", False, False),
     ("rc16_af_temp_change_c", "PS_RC16_AF_TEMP_CHANGE_C", "RC16 smart AF: refocus after a temperature change of (C)", "Imaging", "float", False, False),
