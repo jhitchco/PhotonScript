@@ -1,0 +1,42 @@
+{
+  "seed-ngc6543-catseye": {
+    "id": "seed-ngc6543-catseye",
+    "target": {
+      "name": "Cat's Eye Nebula",
+      "catalog_id": "NGC 6543",
+      "ra_hours": 17.975944,
+      "dec_degrees": 66.633056,
+      "constellation": "Draco",
+      "object_type": "planetary nebula",
+      "tier": "best",
+      "notes": "High-surface-brightness planetary nebula with a bright core and faint outer halo — HDR short subs protect the core while long subs pull the halo.",
+      "recommended_total_hours": 10.0
+    },
+    "priority": 70,
+    "budget_hours": 15.0,
+    "filter_mix": {"Ha": 50, "OIII": 50, "SII": 0},
+    "hdr": {"Ha": 60, "OIII": 60},
+    "active": true
+  },
+  "seed-m42-orion-core": {
+    "id": "seed-m42-orion-core",
+    "target": {
+      "name": "Orion Nebula",
+      "catalog_id": "M 42",
+      "ra_hours": 5.588056,
+      "dec_degrees": -5.383333,
+      "constellation": "Orion",
+      "object_type": "emission nebula",
+      "tier": "best",
+      "notes": "Piggy-600 HDR goal (2026-10-28): 120 s main subs plus a 15 s short set (10% of the time) for the Trapezium / Huygens core, stacked apart (osc_hdr/master_OSC_short) and blended into the clipped core. Rises about 21:30 local in late October at AARO: a second-half-of-the-night target.",
+      "recommended_total_hours": 8.0
+    },
+    "priority": 50,
+    "driving_rig": "piggyback",
+    "osc_hours": 8.0,
+    "exposure_overrides": {"OSC": 120},
+    "hdr": {"OSC": 15},
+    "hdr_fraction": 0.10,
+    "active": true
+  }
+}

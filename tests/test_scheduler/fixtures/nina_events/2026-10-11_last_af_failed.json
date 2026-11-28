@@ -1,0 +1,58 @@
+{
+ "Response": {
+  "Version": 2,
+  "Filter": "L",
+  "AutoFocuserName": "Hocus Focus",
+  "StarDetectorName": "Hocus Focus",
+  "Timestamp": "2026-10-11T21:53:03.9736171-06:00",
+  "Temperature": 24.290000915527344,
+  "Method": "STARHFR",
+  "Fitting": "HYPERBOLIC",
+  "InitialFocusPoint": {
+   "Position": 5667,
+   "Value": 0,
+   "Error": 0
+  },
+  "CalculatedFocusPoint": {
+   "Position": "NaN",
+   "Value": "NaN",
+   "Error": 0
+  },
+  "PreviousFocusPoint": {
+   "Position": "NaN",
+   "Value": "NaN",
+   "Error": 0
+  },
+  "MeasurePoints": [],
+  "Intersections": {
+   "TrendLineIntersection": {
+    "Position": 0,
+    "Value": 0,
+    "Error": 0
+   }
+  },
+  "Fittings": {
+   "Quadratic": "",
+   "Hyperbolic": "",
+   "Gaussian": "",
+   "LeftTrend": "",
+   "RightTrend": ""
+  },
+  "RSquares": {
+   "Quadratic": "NaN",
+   "Hyperbolic": "NaN",
+   "LeftTrend": "NaN",
+   "RightTrend": "NaN"
+  },
+  "BacklashCompensation": {
+   "BacklashCompensationModel": "OVERSHOOT",
+   "BacklashIN": 50,
+   "BacklashOUT": 0
+  },
+  "Duration": "00:02:50.7889574"
+ },
+ "Error": "",
+ "StatusCode": 200,
+ "Success": true,
+ "Type": "API"
+}

@@ -1,0 +1,33 @@
+{
+  "Version": 2,
+  "Filter": "H",
+  "AutoFocuserName": "NINA",
+  "StarDetectorName": "NINA",
+  "Timestamp": "2026-10-05T23:40:02.9910034-06:00",
+  "Temperature": 21.29,
+  "Method": "STARHFR",
+  "Fitting": "TRENDHYPERBOLIC",
+  "InitialFocusPoint": {"Position": 5580, "Value": 0.0, "Error": 0.0},
+  "CalculatedFocusPoint": {"Position": 5412, "Value": 9.8, "Error": 0.0},
+  "PreviousFocusPoint": {"Position": 5580, "Value": 0.0, "Error": 0.0},
+  "MeasurePoints": [
+    {"Position": 5300, "Value": 11.2, "Error": 2.1},
+    {"Position": 5393, "Value": 9.1, "Error": 3.0},
+    {"Position": 5487, "Value": 12.4, "Error": 2.5},
+    {"Position": 5580, "Value": 8.8, "Error": 2.9},
+    {"Position": 5673, "Value": 10.7, "Error": 2.2}
+  ],
+  "Intersections": {
+    "TrendLineIntersection": {"Position": 5412.0, "Value": 9.8},
+    "HyperbolicMinimum": {"Position": 0.0, "Value": 0.0},
+    "QuadraticMinimum": {"Position": 0.0, "Value": 0.0},
+    "GaussianMaximum": {"Position": 0.0, "Value": 0.0}
+  },
+  "Fittings": {"Quadratic": "", "Hyperbolic": "", "Gaussian": "",
+               "LeftTrend": "", "RightTrend": ""},
+  "RSquares": {"Quadratic": 0.21, "Hyperbolic": 0.34, "Gaussian": "NaN",
+               "LeftTrend": "NaN", "RightTrend": 0.4},
+  "BacklashCompensation": {"BacklashCompensationModel": "OVERSHOOT",
+                           "BacklashIN": 0, "BacklashOUT": 120},
+  "Duration": "00:04:12.0000000"
+}

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Targets</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <script src="/static/js/integrations.js?v={{ version }}"></script>
+    <script src="/static/js/readiness.js?v={{ version }}"></script>
+    <style>
+        /* 2026-11-21: ~12% smaller type, denser cards; sections Active /
+           Paused / Done / Tests (target_board.section_of) */
+        main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
+        .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+                 gap:.8rem; }
+        .tcard { background:rgba(255,255,255,.04); border-radius:10px; overflow:hidden;
+                 display:flex; flex-direction:column; color:inherit; text-decoration:none;
+                 border-top:3px solid #334155; transition:background .15s; }
+        .tcard:hover { background:rgba(255,255,255,.07); }
+        .tcard.active { border-top-color:#38bdf8; }
+        .tcard.done { border-top-color:#4ade80; }
+        .tcard.unattr { border-top-color:#a855f7; }
+        /* thumbnail: hidden until an image loads (no empty dark block) */
+        .tcard .pic { display:none; height:92px; background:#0b1220 center/cover no-repeat;
+                      align-items:flex-end; }
+        .tcard .pic.has { display:flex; }
+        .tcard .pic span { font-size:.56rem; opacity:.55; padding:.1rem .35rem;
+                           background:rgba(0,0,0,.35); }
+        .tcard .bd2 { padding:.55rem .75rem .65rem; display:flex; flex-direction:column;
+                      gap:.22rem; }
+        .tcard h3 { margin:0; font-size:.92rem; }
+        .muted { opacity:.62; font-size:.7rem; }
+        .counts { font-size:.82rem; }
+        .counts b { margin-right:.5rem; }
+        .ok { color:#4ade80; } .pend { color:#eab308; } .rej { color:#f87171; }
+        .bar { height:5px; border-radius:3px; background:rgba(255,255,255,.08);
+               overflow:hidden; }
+        .bar > i { display:block; height:100%; background:#38bdf8; }
+        .tcard.done .bar > i { background:#4ade80; }
+        .tag { display:inline-block; padding:.03rem .4rem; border-radius:999px;
+               font-size:.6rem; font-weight:700; background:rgba(255,255,255,.08);
+               margin-left:.3rem; vertical-align:middle; }
+        .ready { font-size:.66rem; }
+        .integ, .integ * { font-size:.64rem !important; }
+        /* tonight: the campaign line + the night altitude sparkline */
+        .tn { font-size:.68rem; line-height:1.4; }
+        .tn .plan { color:#7dd3fc; }
+        .tn .noplan { opacity:.7; }
+        .tn .camp { opacity:.6; }
+        .tn svg { display:block; width:100%; height:auto; margin-top:.2rem;
+                  border-radius:5px; background:#0b1220; }
+        /* sections */
+        details.tsec { margin:.9rem 0 .2rem; }
+        details.tsec > summary { cursor:pointer; list-style:none; font-size:.76rem;
+               letter-spacing:.04em; text-transform:uppercase; opacity:.75;
+               padding:.25rem 0; user-select:none; }
+        details.tsec > summary::-webkit-details-marker { display:none; }
+        details.tsec > summary::before { content:'\25B8'; display:inline-block; width:1em;
+               transition:transform .15s; }
+        details.tsec[open] > summary::before { transform:rotate(90deg); }
+        details.tsec > summary .n { opacity:.7; margin-left:.3rem; }
+        details.tsec > summary .hint { text-transform:none; letter-spacing:0; opacity:.6;
+               margin-left:.6rem; font-size:.68rem; }
+        .sub { margin:.7rem 0 .35rem; font-size:.7rem; opacity:.55; }
+        /* UI tidy 2026-11-23: a mosaic is one row; its panels open below it */
+        details.mos { margin:.5rem 0; }
+        details.mos > summary { cursor:pointer; list-style:none; display:flex; align-items:center;
+               gap:.7rem; padding:.45rem .7rem; border-radius:8px; font-size:.82rem;
+               background:rgba(255,255,255,.04); border-left:3px solid #22d3ee; }
+        details.mos > summary::-webkit-details-marker { display:none; }
+        details.mos > summary::before { content:'\25B8'; opacity:.6; transition:transform .15s; }
+        details.mos[open] > summary::before { transform:rotate(90deg); }
+        details.mos > summary:hover { background:rgba(255,255,255,.07); }
+        details.mos > summary .mname { font-weight:700; }
+        details.mos > summary .bar { flex:1; max-width:18rem; }
+        details.mos > .tgrid { margin-top:.5rem; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Targets: every sub and its review status" %}
+    {% set active_page = "targets" %}
+    {% include "_header.html" %}
+    <main>
+        <section class="panel">
+            <div class="muted" id="tSummary">loading&hellip;</div>
+            <div id="tSections"></div>
+        </section>
+    </main>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+// section, heading, hint, open by default (Tests start collapsed; Paused too:
+// 17 goals, 9 of them empty mosaic panels, so Active is what can run tonight;
+// UI tidy 2026-11-23: Done starts collapsed as well)
+const SECTIONS = [
+    ['active', 'Active', 'goals still short of their goal: tonight and the campaign', true],
+    ['paused', 'Paused', 'inactive goals short of their goal (resume on the goal page)', false],
+    ['done', 'Done', 'goal met, or imaged with no goal', false],
+    ['test', 'Tests', 'tracking / optics tests, TPoint, calibration, unattributed', false],
+];
+const LS_KEY = 'photonscript.targets.sections';
+function loadOpen() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+}
+function saveOpen(sec, open) {
+    try {
+        const s = loadOpen(); s[sec] = open;
+        localStorage.setItem(LS_KEY, JSON.stringify(s));
+    } catch (e) { /* private window: defaults next time */ }
+}
+function card(t) {
+    const c = t.counts, f = t.facts || {}, g = t.goal;
+    const href = '/target?name=' + encodeURIComponent(t.name);
+    const title = t.unattributed ? 'Unattributed (?)' : t.name;
+    const sub = t.unattributed
+        ? 'subs whose recorded name is a loop container (e.g. OSC_LIGHT_LOOP), not a target'
+        : [f.catalog_id, f.object_type, f.size_arcmin ? f.size_arcmin + "'" : '',
+           f.magnitude != null ? 'mag ' + f.magnitude : ''].filter(Boolean).join(' \u00b7 ');
+    const tr = t.top_reason;
+    const cls = t.section === 'active' ? ' active' : t.section === 'done' && g ? ' done' : '';
+    return '<a class="tcard' + cls + (t.unattributed ? ' unattr' : '') +
+        '" href="' + href + '">' +
+        '<div class="pic" data-name="' + esc(t.unattributed ? '' : t.name) +
+        '" data-goal="' + (t.project_id ? '1' : '') +
+        '" data-catalog="' + esc(f.catalog_id || '') + '"><span></span></div>' +
+        '<div class="bd2"><h3>' + esc(title) +
+        (t.mosaic ? '<span class="tag" title="mosaic panel, row ' + t.mosaic.row + ', col ' +
+             t.mosaic.col + '">panel ' + t.mosaic.panel + '/' + t.mosaic.of + '</span>' : '') +
+        (t.section === 'paused' ? '<span class="tag">paused</span>' : '') +
+        // target links: a badge only (the card is itself a link); open them on the target page
+        ((t.links || []).length ? '<span class="tag" title="links: ' +
+             esc(t.links.map(l => l.label).join(', ')) + '">&#8599; ' + t.links.length +
+             ' link' + (t.links.length === 1 ? '' : 's') + '</span>' : '') +
+        (t.project_id == null && !t.unattributed && t.section !== 'test'
+             ? '<span class="tag">no goal</span>' : '') +
+        '</h3><div class="muted">' + esc(sub) + '</div>' +
+        (g ? '<div class="bar" title="goal ' + g.pct + '%: ' + g.hours_done + ' of ' +
+             g.hours_goal + ' h"><i style="width:' + Math.min(100, g.pct) + '%"></i></div>' +
+             '<div class="muted">goal ' + g.pct + '% \u00b7 ' + g.hours_done + ' / ' +
+             g.hours_goal + ' h</div>' : '') +
+        // tonight's campaign line + sparkline (filled from /api/targets/tonight)
+        (t.project_id && t.section !== 'test'
+             ? '<div class="tn" data-key="' + esc(t.key) + '"></div>' : '') +
+        '<div class="counts"><b class="ok" title="approved">' + c.approved + ' \u2713</b>' +
+        '<b class="pend" title="pending review">' + c.pending + ' \u25cb</b>' +
+        '<b class="rej" title="rejected">' + c.rejected + ' \u2717</b>' +
+        '<span class="muted">' + c.hours.approved + ' h approved</span></div>' +
+        (t.unattributed ? '' : '<div class="ready" data-rkey="' +
+             esc(Readiness.key(t.name)) + '"></div>') +
+        (t.project_id ? '<div class="muted integ" id="integ-' +
+             esc(t.project_id) + '"></div>' : '') +
+        '<div class="muted">' + (t.last_night ? 'last night ' + t.last_night + ' \u00b7 ' +
+             t.nights + ' night' + (t.nights === 1 ? '' : 's') : 'no subs yet') +
+        (tr ? ' \u00b7 top reject: ' + esc(tr.label) + ' (' + tr.count + ')' : '') +
+        '</div></div></a>';
+}
+// PS-111: mosaic panels group under their mosaic, in capture order.
+// UI tidy 2026-11-23: each mosaic is one row ("name, N panels, x h of y h",
+// hours over every panel on the page); a click opens its panel cards.
+let ALL = [];
+function mosaicRow(m, ps, sec) {
+    const every = ALL.filter(t => t.mosaic && t.mosaic.id === m.id);
+    let done = 0, goal = 0;
+    every.forEach(t => { if (t.goal) { done += t.goal.hours_done || 0; goal += t.goal.hours_goal || 0; } });
+    const pct = goal ? Math.min(100, Math.round(done / goal * 100)) : 0;
+    const r1 = v => Math.round(v * 10) / 10;
+    const here = ps.length < m.of ? ' (' + ps.length + ' in this section)' : '';
+    const key = 'mos:' + sec + ':' + m.id;
+    const isOpen = !!loadOpen()[key];
+    return '<details class="mos" data-sec="' + esc(key) + '"' + (isOpen ? ' open' : '') + '><summary>' +
+        '<span class="mname">' + esc(m.name) + '</span>' +
+        '<span>' + m.of + ' panels' + here + ', ' + r1(done) + ' h of ' + r1(goal) + ' h</span>' +
+        '<span class="bar" title="' + pct + '%"><i style="width:' + pct + '%"></i></span>' +
+        '<span class="muted">' + pct + '% \u00b7 finished in order</span></summary>' +
+        '<div class="tgrid">' + ps.map(card).join('') + '</div></details>';
+}
+function grids(list, sec) {
+    const plain = list.filter(t => !t.mosaic), mos = {};
+    list.filter(t => t.mosaic).forEach(t => (mos[t.mosaic.id] = mos[t.mosaic.id] || []).push(t));
+    let h = plain.length ? '<div class="tgrid">' + plain.map(card).join('') + '</div>' : '';
+    Object.values(mos).forEach(ps => {
+        ps.sort((a, b) => a.mosaic.panel - b.mosaic.panel);
+        h += mosaicRow(ps[0].mosaic, ps, sec);
+    });
+    return h;
+}
+async function pics(root) {
+    // one lookup at a time, open sections only: Wikipedia (server caches hits),
+    // then for a goal the reference image (cached DSS2 cutout or own best sub)
+    for (const el of root.querySelectorAll('.pic[data-name]:not([data-tried])')) {
+        if (!el.dataset.name) continue;
+        if (el.closest('details:not([open])')) continue;   // folded: load when opened
+        el.dataset.tried = '1';
+        let url = null, label = '';
+        try {
+            const r = await (await fetch('/api/thumbnail?name=' +
+                encodeURIComponent(el.dataset.name) + '&catalog=' +
+                encodeURIComponent(el.dataset.catalog))).json();
+            if (r.url) { url = r.url; label = 'Wikipedia'; }
+        } catch (e) { /* offline */ }
+        if (!url && el.dataset.goal) {
+            try {
+                const r = await (await fetch('/api/targets/refimage/meta?view=close&name=' +
+                    encodeURIComponent(el.dataset.name))).json();
+                if (r.image_url) { url = r.image_url; label = r.label || r.source; }
+            } catch (e) { /* none */ }
+        }
+        if (url) {
+            el.style.backgroundImage = 'url("' + url + '")';
+            el.firstChild.textContent = label;
+            el.classList.add('has');
+        }
+    }
+}
+// Integration readiness per target and rig (moved here off the Runs sidebar):
+// accepted lights per filter + desktop sync, from /api/integration/readiness.
+// The full breakdown and the integrate command are on the target page.
+async function loadReadiness() {
+    try {
+        const r = await Readiness.load();
+        document.querySelectorAll('.ready[data-rkey]').forEach(el => {
+            el.innerHTML = Readiness.chip(r.byKey[el.dataset.rkey], r.synced);
+        });
+    } catch (e) { /* readiness unavailable: cards stay as they are */ }
+}
+// Night altitude sparkline: astro dusk to dawn, the goal's floor, tonight's
+// planned window (solid) or the campaign's (outline), the moon faint.
+function spark(b, t) {
+    const W = 240, H = 46, PB = 9, ph = H - PB, n = t.alts.length;
+    const x = i => (i / Math.max(1, n - 1) * W).toFixed(1);
+    const y = a => (ph - Math.max(0, Math.min(90, a)) / 90 * ph).toFixed(1);
+    let s = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img">' +
+        '<title>' + esc(t.name + ': above ' + t.floor + '\u00b0 for ' + t.up_h + ' h tonight, ' +
+        'peak ' + Math.round(t.peak_alt) + '\u00b0 at ' + t.peak_local + ' ' + b.tz +
+        ' (dusk ' + b.dusk_local + ', dawn ' + b.dawn_local + ')') + '</title>';
+    if (t.window) {
+        s += '<rect x="' + (t.window[0] * W).toFixed(1) + '" y="0" width="' +
+             ((t.window[1] - t.window[0]) * W).toFixed(1) + '" height="' + ph +
+             '" fill="#38bdf8" opacity=".22"/>';
+    } else if (t.campaign_window) {
+        s += '<rect x="' + (t.campaign_window[0] * W).toFixed(1) + '" y=".5" width="' +
+             ((t.campaign_window[1] - t.campaign_window[0]) * W).toFixed(1) + '" height="' +
+             (ph - 1) + '" fill="none" stroke="#38bdf8" stroke-dasharray="2,2" opacity=".6"/>';
+    }
+    s += '<line x1="0" x2="' + W + '" y1="' + y(t.floor) + '" y2="' + y(t.floor) +
+         '" stroke="#fbbf24" stroke-dasharray="3,3" opacity=".55"/>';
+    if ((b.moon || []).length === n)
+        s += '<polyline fill="none" stroke="#cbd5e1" stroke-width="1" opacity=".28" points="' +
+             b.moon.map((a, i) => x(i) + ',' + y(a)).join(' ') + '"/>';
+    s += '<polyline fill="none" stroke="#7dd3fc" stroke-width="1.6" points="' +
+         t.alts.map((a, i) => x(i) + ',' + y(a)).join(' ') + '"/>';
+    if (b.now_frac != null)
+        s += '<line x1="' + (b.now_frac * W).toFixed(1) + '" x2="' + (b.now_frac * W).toFixed(1) +
+             '" y1="0" y2="' + ph + '" stroke="#e2e8f0" stroke-dasharray="2,2" opacity=".6"/>';
+    for (const k of (b.ticks || []))
+        s += '<text x="' + (k.frac * W).toFixed(1) + '" y="' + (H - 1.5) +
+             '" fill="#64748b" font-size="7" text-anchor="middle">' + esc(k.label) + '</text>';
+    return s + '</svg>';
+}
+async function loadTonight() {
+    const els = document.querySelectorAll('.tn[data-key]');
+    if (!els.length) return;
+    let b;
+    try { b = await (await fetch('/api/targets/tonight')).json(); }
+    catch (e) { return; }
+    const T = b.targets || {};
+    els.forEach(el => {
+        const t = T[el.dataset.key];
+        if (!t) return;
+        const ln = t.tonight || {};
+        el.innerHTML = '<div class="' + (ln.status === 'planned' ? 'plan' : 'noplan') + '">' +
+            esc(ln.text) + '</div>' +
+            (t.campaign_text ? '<div class="camp">' + esc(t.campaign_text) + '</div>' : '') +
+            spark(b, t);
+    });
+    if (b.dusk_local) {
+        const s = document.getElementById('tSummary');
+        s.textContent += ' \u00b7 night ' + b.dusk_local + '-' + b.dawn_local + ' ' + b.tz +
+            (b.moon_illum_pct != null ? ', moon ' + b.moon_illum_pct + '%' : '');
+    }
+}
+fetch('/api/targets').then(r => r.json()).then(d => {
+    const ts = d.targets || [];
+    ALL = ts;
+    const open = loadOpen();
+    const n = ts.reduce((a, t) => a + t.counts.total, 0);
+    document.getElementById('tSummary').textContent = ts.length + ' targets \u00b7 ' +
+        n + ' subs recorded \u00b7 ' +
+        SECTIONS.map(s => ts.filter(t => t.section === s[0]).length + ' ' +
+                     s[1].toLowerCase()).join(' \u00b7 ') +
+        ' \u00b7 read-only: review subs on the run page (click a tile on a target)';
+    const box = document.getElementById('tSections');
+    box.innerHTML = SECTIONS.map(([k, label, hint, def]) => {
+        const list = ts.filter(t => (t.section || 'active') === k);
+        if (!list.length) return '';
+        const isOpen = open[k] == null ? def : !!open[k];
+        return '<details class="tsec" data-sec="' + k + '"' + (isOpen ? ' open' : '') +
+            '><summary>' + esc(label) + '<span class="n">' + list.length + '</span>' +
+            '<span class="hint">' + esc(hint) + '</span></summary>' + grids(list, k) + '</details>';
+    }).join('');
+    box.querySelectorAll('details.tsec, details.mos').forEach(det => {
+        // a <details open> also fires one toggle on insert: only a real
+        // change is remembered (defaults stay defaults)
+        let last = det.open;
+        det.addEventListener('toggle', () => {
+            if (det.open === last) return;
+            last = det.open;
+            saveOpen(det.dataset.sec, det.open);
+            if (det.open) pics(det);
+        });
+    });
+    // PS-33: the integrator ledger line per goal (latest version, new data since)
+    if (window.Integrations) Integrations.campaign('integ-', null);
+    loadReadiness();
+    loadTonight();
+    (async () => {
+        for (const det of box.querySelectorAll('details.tsec[open]')) await pics(det);
+    })();
+}).catch(() => document.getElementById('tSummary').textContent = 'unavailable');
+</script>
+    {% include "_footer.html" %}
+</body>
+</html>

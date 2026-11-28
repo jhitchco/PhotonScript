@@ -1,0 +1,417 @@
+{
+"_source": "read-only GET /api/runs/2026-10-13 on the scope PC (2026-10-13), trimmed",
+"date": "2026-10-13",
+"plan": {
+"night_of": "2026-10-13",
+"dusk_utc": "2026-10-14T02:05:43.718608Z",
+"dawn_utc": "2026-10-14T12:00:54.271361Z",
+"targets": [
+{
+"name": "Andromeda Galaxy",
+"window_start_utc": "2026-10-14T02:54:41Z",
+"window_end_utc": "2026-10-14T05:16:08Z",
+"guided": false,
+"unguided_filters": [],
+"exposures": [
+{
+"filter": "L",
+"exp_s": 180.0,
+"planned": 2
+},
+{
+"filter": "R",
+"exp_s": 180.0,
+"planned": 1
+},
+{
+"filter": "G",
+"exp_s": 180.0,
+"planned": 1
+},
+{
+"filter": "B",
+"exp_s": 180.0,
+"planned": 1
+}
+]
+},
+{
+"name": "Heart Nebula",
+"window_start_utc": "2026-10-14T05:16:08Z",
+"window_end_utc": "2026-10-14T12:00:54Z",
+"guided": false,
+"unguided_filters": [],
+"exposures": [
+{
+"filter": "Ha",
+"exp_s": 180.0,
+"planned": 34
+},
+{
+"filter": "OIII",
+"exp_s": 180.0,
+"planned": 39
+},
+{
+"filter": "SII",
+"exp_s": 180.0,
+"planned": 40
+}
+]
+}
+]
+},
+"subs": [
+{
+"rig": "piggyback",
+"file": "LIGHT/2026-10-13_20-16-29__0.00_450.00s_0000.fits",
+"time": "2026-10-14T02:24:17.433589Z",
+"start_utc": "2026-10-14T02:16:29Z",
+"end_utc": "2026-10-14T02:23:59Z",
+"target": "?",
+"filter": "OSC",
+"exp_s": 450.0,
+"ecc": 0.805,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 4.09,
+"fwhm_arcsec": 13.21,
+"stars": 400,
+"focpos": 11104,
+"guide_state": "guiding",
+"guide_rms": null,
+"passed_qa": false,
+"pointing": {
+"src": "mount-log",
+"mount_ra": 322.79737,
+"mount_dec": 12.29175,
+"alt": 66.36,
+"az": 142.842,
+"pier": "West"
+}
+},
+{
+"rig": "piggyback",
+"file": "LIGHT/2026-10-13_20-24-02__0.00_450.00s_0001.fits",
+"time": "2026-10-14T02:31:49.755234Z",
+"start_utc": "2026-10-14T02:24:02Z",
+"end_utc": "2026-10-14T02:31:32Z",
+"target": "?",
+"filter": "OSC",
+"exp_s": 450.0,
+"ecc": 0.82,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 4.07,
+"fwhm_arcsec": 13.36,
+"stars": 400,
+"focpos": 11104,
+"guide_state": "guiding",
+"guide_rms": null,
+"passed_qa": false,
+"pointing": {
+"src": "mount-log",
+"mount_ra": 322.80002,
+"mount_dec": 12.29015,
+"alt": 67.357,
+"az": 147.272,
+"pier": "West"
+}
+},
+{
+"rig": "piggyback",
+"file": "LIGHT/2026-10-13_20-38-57__0.00_450.00s_0002.fits",
+"time": "2026-10-14T02:46:47.241724Z",
+"start_utc": "2026-10-14T02:38:57Z",
+"end_utc": "2026-10-14T02:46:27Z",
+"target": "?",
+"filter": "OSC",
+"exp_s": 450.0,
+"ecc": 0.352,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 2.5,
+"fwhm_arcsec": 8.41,
+"stars": 400,
+"focpos": 11104,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": false,
+"pointing": {
+"src": "mount-log",
+"mount_ra": 11.05397,
+"mount_dec": 41.42156,
+"alt": 44.297,
+"az": 61.225,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_20-44-16_Andromeda Galaxy_L_300.00s_0000.fits",
+"time": "2026-10-14T02:49:28.879335Z",
+"start_utc": "2026-10-14T02:44:16Z",
+"end_utc": "2026-10-14T02:49:16Z",
+"target": "Andromeda Galaxy",
+"filter": "L",
+"exp_s": 300.0,
+"ecc": 0.792,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 10.47,
+"fwhm_arcsec": 4.34,
+"stars": 400,
+"focpos": 5774,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": false,
+"pointing": {
+"src": "header",
+"mount_ra": 10.65313,
+"mount_dec": 41.26811,
+"alt": 45.59,
+"az": 61.44,
+"pier": "West"
+}
+},
+{
+"rig": "piggyback",
+"file": "LIGHT/2026-10-13_20-46-29__0.00_450.00s_0003.fits",
+"time": "2026-10-14T02:54:31.377716Z",
+"start_utc": "2026-10-14T02:46:29Z",
+"end_utc": "2026-10-14T02:53:59Z",
+"target": "?",
+"filter": "OSC",
+"exp_s": 450.0,
+"ecc": 0.632,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 3.05,
+"fwhm_arcsec": 9.97,
+"stars": 400,
+"focpos": 11104,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "mount-log",
+"mount_ra": 11.02814,
+"mount_dec": 41.41812,
+"alt": 45.697,
+"az": 61.459,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_20-49-24_Andromeda Galaxy_R_300.00s_0000.fits",
+"time": "2026-10-14T02:54:40.215105Z",
+"start_utc": "2026-10-14T02:49:24Z",
+"end_utc": "2026-10-14T02:54:24Z",
+"target": "Andromeda Galaxy",
+"filter": "R",
+"exp_s": 300.0,
+"ecc": 0.708,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 9.15,
+"fwhm_arcsec": 4.32,
+"stars": 400,
+"focpos": 5739,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": false,
+"pointing": {
+"src": "header",
+"mount_ra": 10.6532,
+"mount_dec": 41.26772,
+"alt": 46.54,
+"az": 61.58,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_21-00-11_Andromeda Galaxy_L_180.00s_0000.fits",
+"time": "2026-10-14T03:03:22.332229Z",
+"start_utc": "2026-10-14T03:00:11Z",
+"end_utc": "2026-10-14T03:03:11Z",
+"target": "Andromeda Galaxy",
+"filter": "L",
+"exp_s": 180.0,
+"ecc": 0.425,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 8.27,
+"fwhm_arcsec": 3.9,
+"stars": 400,
+"focpos": 5766,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "header",
+"mount_ra": 10.65413,
+"mount_dec": 41.27045,
+"alt": 48.19,
+"az": 61.78,
+"pier": "West"
+}
+},
+{
+"rig": "piggyback",
+"file": "LIGHT/2026-10-13_20-58-23__0.00_450.00s_0004.fits",
+"time": "2026-10-14T03:06:23.933584Z",
+"start_utc": "2026-10-14T02:58:23Z",
+"end_utc": "2026-10-14T03:05:53Z",
+"target": "?",
+"filter": "OSC",
+"exp_s": 450.0,
+"ecc": 0.51,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 2.95,
+"fwhm_arcsec": 9.54,
+"stars": 400,
+"focpos": 11087,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "mount-log",
+"mount_ra": 11.02908,
+"mount_dec": 41.42065,
+"alt": 47.894,
+"az": 61.745,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_21-03-12_Andromeda Galaxy_L_180.00s_0001.fits",
+"time": "2026-10-14T03:06:30.621230Z",
+"start_utc": "2026-10-14T03:03:12Z",
+"end_utc": "2026-10-14T03:06:12Z",
+"target": "Andromeda Galaxy",
+"filter": "L",
+"exp_s": 180.0,
+"ecc": 0.551,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 8.84,
+"fwhm_arcsec": 4.17,
+"stars": 400,
+"focpos": 5766,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": false,
+"pointing": {
+"src": "header",
+"mount_ra": 10.65418,
+"mount_dec": 41.27021,
+"alt": 48.75,
+"az": 61.83,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_21-06-20_Andromeda Galaxy_R_180.00s_0000.fits",
+"time": "2026-10-14T03:09:32.814714Z",
+"start_utc": "2026-10-14T03:06:20Z",
+"end_utc": "2026-10-14T03:09:20Z",
+"target": "Andromeda Galaxy",
+"filter": "R",
+"exp_s": 180.0,
+"ecc": 0.481,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 7.79,
+"fwhm_arcsec": 3.68,
+"stars": 400,
+"focpos": 5731,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "header",
+"mount_ra": 10.65416,
+"mount_dec": 41.26996,
+"alt": 49.34,
+"az": 61.89,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_21-09-27_Andromeda Galaxy_G_180.00s_0000.fits",
+"time": "2026-10-14T03:12:39.030466Z",
+"start_utc": "2026-10-14T03:09:27Z",
+"end_utc": "2026-10-14T03:12:27Z",
+"target": "Andromeda Galaxy",
+"filter": "G",
+"exp_s": 180.0,
+"ecc": 0.523,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 8.46,
+"fwhm_arcsec": 3.99,
+"stars": 341,
+"focpos": 5766,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "header",
+"mount_ra": 10.6542,
+"mount_dec": 41.26971,
+"alt": 49.92,
+"az": 61.93,
+"pier": "West"
+}
+},
+{
+"rig": "piggyback",
+"file": "LIGHT/2026-10-13_21-05-55__0.00_450.00s_0005.fits",
+"time": "2026-10-14T03:13:56.905322Z",
+"start_utc": "2026-10-14T03:05:55Z",
+"end_utc": "2026-10-14T03:13:25Z",
+"target": "?",
+"filter": "OSC",
+"exp_s": 450.0,
+"ecc": 0.665,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 3.28,
+"fwhm_arcsec": 10.59,
+"stars": 400,
+"focpos": 11087,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "mount-log",
+"mount_ra": 11.02918,
+"mount_dec": 41.42006,
+"alt": 49.267,
+"az": 61.882,
+"pier": "West"
+}
+},
+{
+"rig": "rc16",
+"file": "LIGHT/2026-10-13_21-12-31_Andromeda Galaxy_B_180.00s_0000.fits",
+"time": "2026-10-14T03:15:43.814728Z",
+"start_utc": "2026-10-14T03:12:31Z",
+"end_utc": "2026-10-14T03:15:31Z",
+"target": "Andromeda Galaxy",
+"filter": "B",
+"exp_s": 180.0,
+"ecc": 0.486,
+"ecc_def": "sqrt(1-(b/a)^2)",
+"hfr": 7.98,
+"fwhm_arcsec": 3.77,
+"stars": 353,
+"focpos": 5766,
+"guide_state": "stopped",
+"guide_rms": null,
+"passed_qa": true,
+"pointing": {
+"src": "header",
+"mount_ra": 10.65423,
+"mount_dec": 41.26951,
+"alt": 50.5,
+"az": 61.97,
+"pier": "West"
+}
+}
+]
+}
