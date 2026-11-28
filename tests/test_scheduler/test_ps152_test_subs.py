@@ -324,3 +324,34 @@ def test_harvest_never_skips_the_af_filter(tmp_path, monkeypatch):
                           focus_filter_offsets="L:0,Ha:120")
     assert "L" in filters and "Ha" not in filters and "H" not in filters
     assert "OIII" in filters
+
+
+# ---- PS-144 (2026-11-27): a manual arm may calibrate a second time tonight ----
+
+def _arm_until_plan(a, monkeypatch, armed_by):
+    """Run arm() only up to the plan step (the plan reports an error after
+    the focus-cal bookkeeping), so no NINA, preflight or loop is touched."""
+    from photonscript.scheduler import night_plan
+    monkeypatch.setattr(night_plan, "build_night_plan",
+                        lambda c: {"night_of": "2026-10-06", "error": "test: stop here"})
+    out = asyncio.run(a.arm(guiding="unguided", armed_by=armed_by))
+    assert out["state"] == "ERROR"
+
+
+def test_manual_arm_with_the_flag_on_clears_tonights_record(tmp_path, monkeypatch):
+    a = _cal_armer(tmp_path, monkeypatch, focus_calibration_tonight=True)
+    a.focus_cal = {"night": "2026-10-06", "container": "Focus calibration M52",
+                   "status": "done"}
+    _arm_until_plan(a, monkeypatch, "manual")
+    assert a.focus_cal is None
+
+
+@pytest.mark.parametrize("armed_by,flag", [("auto-noon", True), ("auto-evening", True),
+                                           ("manual", False)])
+def test_other_arms_keep_the_once_per_night_guard(tmp_path, monkeypatch, armed_by, flag):
+    a = _cal_armer(tmp_path, monkeypatch, focus_calibration_tonight=flag)
+    rec = {"night": "2026-10-06", "container": "Focus calibration M52",
+           "status": "dispatched"}
+    a.focus_cal = dict(rec)
+    _arm_until_plan(a, monkeypatch, armed_by)
+    assert a.focus_cal == rec

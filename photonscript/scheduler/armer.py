@@ -766,6 +766,18 @@ class Armer:
             self.block_decisions = {}   # PS-85: decisions belong to one night
         self.recipe = None   # PS-181: a recipe belongs to the arm that set it
         self._recipe_pending = self._recipe_alert = None
+        if (self.armed_by == "manual"
+                and bool(getattr(self.config, "focus_calibration_tonight", False))
+                and self._focus_cal_tonight()):
+            # PS-144 (2026-11-27): an operator who turns the calibration back
+            # on and arms by hand wants a second one tonight. PS-152's
+            # once-per-night guard still covers every automatic path
+            # (re-dispatch, resume, restart, auto-arm): only a manual arm
+            # clears tonight's record.
+            logger.info("Manual arm with focus_calibration_tonight on: tonight's "
+                        "calibration record (%s) cleared for a second run",
+                        (self.focus_cal or {}).get("status"))
+            self.focus_cal = None
         self.tpoint_override = bool(tpoint_override)   # 2026-10-16, this arm only
         self.tpoint_pf = None
         if "error" in self.plan:
